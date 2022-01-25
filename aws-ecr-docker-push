@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+if [ $# -lt 1 ] ; then
+    echo "Usage: $0 LOCAL-IMG-NAME:TAG [REMOTE-IMG-NAME:TAG]"
+    exit 1
+fi
+LOCAL_IMG_NAME_TAG="$1"; shift
+REMOTE_IMG_NAME_TAG="$LOCAL_IMG_NAME_TAG"
+if [ $# -eq 1 ] ; then
+    REMOTE_IMG_NAME_TAG="$2" ; shift
+fi
+
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+AWS_REGION=$(aws ec2 describe-availability-zones --output text --query 'AvailabilityZones[0].[RegionName]')
+
+docker tag \
+    "$LOCAL_IMG_NAME_TAG" \
+    "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REMOTE_IMG_NAME_TAG"
+
+docker push \
+    "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REMOTE_IMG_NAME_TAG"
+

@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+AWS_REGION=$(aws ec2 describe-availability-zones --output text --query 'AvailabilityZones[0].[RegionName]')
+
+if [ -n "$AWS_ACCOUNT_ID" -a -n "$AWS_REGION" ] ; then
+    aws ecr get-login-password \
+        | docker login \
+            --username AWS \
+            --password-stdin \
+            "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+fi

@@ -1,0 +1,27 @@
+#! /bin/bash
+# remote-gpg   
+# original author: Dustin J. Mitchell <dustin@cs.uchicago.edu>
+
+set -e
+
+if [ $# -lt 1 ] ; then
+    echo "Supply a hostname"
+    exit 1
+fi
+host="$1"
+
+# our local and remote homedirs might be different
+# TODO remote homedirs can vary in paths, too
+REMOTE_HOME=/home/deploy
+LOCAL_HOME=/home/vagrant
+
+# remove any existing agent socket (in theory `StreamLocalBindUnlink yes`
+# does this, but in practice, not so much)
+ssh $host /bin/sh -c 'set -u; rm -f $HOME/.gnupg/S.gpg-agent'
+ssh \
+  -t -R "$REMOTE_HOME/.gnupg/S.gpg-agent:$LOCAL_HOME/.gnupg/S.gpg-agent-extra" \
+  $host \
+  sh -c "echo; echo \"Perform remote GPG operations and hit enter\"; \
+      read; \
+      sleep 1; \
+      rm -f $REMOTE_HOME/.gnupg/S.gpg-agent";

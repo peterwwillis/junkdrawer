@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+set -x -e
+docker run --rm --env NEW_RELIC_APIKEY=$NEW_RELIC_APIKEY -v /etc/ssl/certs:/etc/ssl/certs -v `pwd`:/app -w /app nr-cli "$@"

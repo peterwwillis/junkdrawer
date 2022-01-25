@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -eu
+
+DOCKER_IMG_TAG="alpine"
+DOCKER_IMG="adoptopenjdk/openjdk11:$DOCKER_IMG_TAG"
+
+docker run --rm -it -v `pwd`:/app "$DOCKER_IMG" java "$@"

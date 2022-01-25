@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# aws-adfs-profile-login - Login to AWS with aws-adfs, using AWS profiles
+
+set -e -o pipefail -u
+[ x"${DEBUG:-}" = "x1" ] && set -x
+
+
+_usage () {
+    cat <<EOUSAGE
+Usage: $0 [AWS_PROFILE [..]] [-- COMMAND ..]
+
+This script will attempt to authenticate you to AWS using the aws-adfs tool and use
+AWS profiles (and create them if they don't exist). You can also set default values
+in a $TFVARS file.
+
+This script does the following:
+  1. Load defaults from ~/.aws-adfs-profilerc
+  2. Load defaults from $TFVARS (TFVARS environment variable)
+  3. Iterate over any AWS profiles passed in the environment, in configs, or as
+     command arguments.
+  4. Check if you are already authenticated to an appropriate role ARN.
+  5. Attempt to login using an existing AWS profile, and if necessary using the
+     'source_profile' of a given profile.
+  6. If necessary, create a new AWS profile when logging in.
+  7. Optionally role-switch to an additional role after login.
+  8. Run any commands added as arguments.
+
+By default this script will just export environment variables (so you can 'source' this script
+from another one), but you can also pass command-line arguments to be executed with those
+environment variables set.
+
+If you have trouble logging in, remember your username should be in DOMAIN\\user or
+user@domain.fqdn format. You may also need to enable MFA or do other setup depending on
+how your organization set up SSO with AWS.
+
+Optional keys for your '$TFVARS' file:
+    adfs_host                 The ADFS host to authenticate against.
+    aws_region                The AWS region to login with.
+    aws_role_arn              If your AWS user allows you to login to multiple AWS accounts,
+                              You will be interactively prompted to choose an ARN to login as.
+                              This option lets you select that value automatically.
+    assume_role_arn           This is the ARN of a role to assume after aws-adfs login succeeds.
+    aws_session_duration      The duration of the AWS session to open, in seconds.
+    aws_profile               Set the AWS_PROFILE variable and --profile option.
+EOUSAGE
+    exit 1
+}
+_save_profile () {
+    if [ -n "${AWS_PROFILE:-}" ] ; then
+        echo "$0: Info: Detected AWS_PROFILE '$AWS_PROFILE'" 1>&2
+        # Add an AWS_PROFILE to the profiles to authenticate
+        PROFILES+=("$AWS_PROFILE")
+        ADFS_PROFILE="$AWS_PROFILE"
+        unset AWS_PROFILE
+    fi
+}
+_restore_profile () {
+    if [ -n "${ADFS_PROFILE:-}" ] ; then
+        export AWS_PROFILE="$ADFS_PROFILE"
+    else
+        if [ ${#PROFILES[@]} -gt 1 ] ; then
+            echo "$0: Info: not setting a default AWS_PROFILE due to specifying more than one profile on the command line" 1>&2
+        else
+            export AWS_PROFILE="${PROFILES[0]}"
+        fi
+    fi
+    unset ADFS_PROFILE
+}
+_check_current_login () {
+    local profile="$1"
+    # First check if we're already authenticated to AWS; no need to login again if we're already there.
+    # If we used ROLE_ARN it seems to lead to having an assume-role/ caller identity, so do some weird
+    # hokey pokey to figure out if we're the right thing.
+    # if $ROLE_ARN is               'arn:aws:iam::foobar:role/RoleName',
+    # then $current_ident_arn is    'arn:aws:sts::foobar:assumed-role/RoleName/User@Domain'
+    current_ident_arn="$(aws --profile=$profile --output=text --query=Arn sts get-caller-identity)"
+    if [ -n "$current_ident_arn" ] ; then
+        check_arn="$(_get_aws_profile_rolearn "$profile")"
+        if [ -z "$check_arn" -a -n "${ROLE_ARN:-}" ] ; then
+            check_arn="${ROLE_ARN}"
+        fi
+        if [ -n "$check_arn" ] ; then
+            check_arn_assumed=$(echo "$check_arn" | sed -e 's?:role/?:assumed-role/?; s?^arn:aws:iam:?arn:aws:sts:?' )
+            # look for 'arn:aws:sts::foobar/assumed-role/RoleName/'
+            if echo "$current_ident_arn" | grep -q "^$check_arn_assumed/" ; then
+                echo "$0: Info: already authenticated as '$current_ident_arn', skipping login" 1>&2
+                return 0
+            fi
+        fi
+    fi
+    # Didn't get an identity back
+    return 1
+}
+_list_profiles () {
+    grep '^\[profile ' ~/.aws/config | cut -d ' ' -f 2 | cut -d ']' -f 1 | sort -u
+}
+_get_aws_profiles () {
+    awk '/\[/{prefix=$0; next} $1{print prefix $0}' ~/.aws/config  | cut -d ' ' -f 2 | cut -d ']' -f 1 | sort -u
+}
+_get_aws_profile_rolearn () {
+    local profile="$1"
+    awk '/\[/{prefix=$0; next} $1{print prefix $0}' ~/.aws/config | grep role_arn | grep -e " $profile\]" | cut -d = -f 2- | tr -d '[:space:]'
+}
+# returns the source profile for a given profile
+_get_source_profiles () {
+    awk '/\[/{prefix=$0; next} $1{print prefix $0}' ~/.aws/config | grep -e "]source_profile[[:space:]]*=[[:space:]]*" | sed -e 's/\[profile \([^]]\+\).*=/\1 =/g; s/ //g;' | sort -u
+}
+_aws_login () {
+    local profile="$1"
+
+    if ! _list_profiles | grep -q -e "^$profile$" ; then
+        echo "$0: Error: no profile '$profile' found" 1>&2
+        exit 1
+    fi
+
+    if [ $FORCE -eq 1 ] ; then
+        _aws_adfs_login "$profile"
+
+    # Check if this profile already works, but also allow forcing it
+    elif ! _check_current_login "$profile" ; then
+
+        # Does it have a source_profile?
+        src_profile="$( (_get_source_profiles | grep -e "^$profile=" | cut -d = -f 2-) || true )"
+        if [ -n "$src_profile" ] ; then
+            echo "$0: Info: authenticating source profile '$src_profile'" 1>&2
+            aws-adfs login --profile "$src_profile" 1>&2
+
+        # Is it a profile?
+        elif _get_aws_profiles | grep -q -e "^$profile$" ; then
+            echo "$0: Info: authenticating profile '$profile'" 1>&2
+            aws-adfs login --profile "$profile" 1>&2
+        
+        # Guess we gotta do the 'full' login (create a new profile)
+        else
+            echo "$0: Info: creating/updating profile '$profile'" 1>&2
+            _aws_adfs_login "$profile"
+        fi
+    fi
+}
+_aws_adfs_login () {
+    local profile="$1"
+
+    # If your federated AWS user has access to login to multiple AWS accounts, you will be
+    # prompted which ARN (AWS account) you want to login as. This value makes the choice
+    # automatic, rather than interactive.
+    ROLE_ARN_OPT=""
+    if [ -n "${ROLE_ARN:-}" ] ; then
+        ROLE_ARN_OPT="--role-arn $ROLE_ARN"
+    fi
+
+    # aws-adfs dies if this directory doesn't exist
+    [ -d ~/.aws ] || mkdir -p ~/.aws
+
+    # SSPI makes authentication fail (for me, anyway)
+    SSPI_OPT=""
+    if [ $USE_SSPI -eq 1 ] ; then
+        SSPI_OPT="--use-sspi"
+    else
+        SSPI_OPT="--no-sspi"
+    fi
+
+    aws-adfs login $SSPI_OPT --profile "$profile" $ROLE_ARN_OPT --region "$REGION" --adfs-host "$ADFS_HOST" --session-duration "$SESSION_DURATION" 1>&2
+}
+_assume_role () {
+    local target_role_arn="$1"; shift
+    echo "$0: Info: assuming role '$target_role_arn'" 1>&2
+    local my_role="$(aws sts assume-role --role-arn "${target_role_arn}" --role-session-name AWS-ADFS-CLI-Session)"
+    [ -z "$my_role" ] && return 1
+    vars="$( echo "$my_role" | jq -r '.Credentials | [ "AWS_ACCESS_KEY_ID=" + (.AccessKeyId|@sh), "AWS_SECRET_ACCESS_KEY=" + (.SecretAccessKey|@sh), "AWS_SESSION_TOKEN=" + (.SessionToken|@sh) ] | .[]' )"
+    eval "$vars"
+    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+}
+_jqvar () {
+    local var="$1" file="$2"
+    jq -r ".$var | select(.!=null)" "$file"
+}
+_save_conf () {
+    [ -r ~/.aws-adfs-profilerc ] || cat <<EOCONF > ~/.aws-adfs-profilerc
+     {
+        "SESSION_DURATION": "$SESSION_DURATION",
+        "REGION":           "$REGION",
+        "ADFS_HOST":        "$ADFS_HOST",
+        "USE_SSPI":         $USE_SSPI
+     }
+EOCONF
+}
+_load_conf () {
+    # '[ -n "${k:-}" ] || k=v'
+    eval "$( jq -r 'keys[] as $k | [ "[ -n \"${\($k):-}\" ] || \($k)" + "=" + (.[$k] | @sh) ] | .[] ' ~/.aws-adfs-profilerc )"
+}
+_init () {
+    # Requirements: jq, aws-adfs, AWS CLI
+    for cmd in jq aws-adfs aws ; do
+        if ! command -v $cmd 2>/dev/null 1>/dev/null ; then
+            echo "$0: Error: please install the command '$cmd' in your PATH."
+            exit 1
+        fi
+    done
+
+    _load_conf
+
+    # Set defaults
+    USE_SSPI=0
+    [ -z "${REGION:-}" ]            && REGION="us-east-1"
+    [ -z "${SESSION_DURATION:-}" ]  && SESSION_DURATION="28800"
+
+    # Tell Terraform to load the profile correctly
+    export AWS_SDK_LOAD_CONFIG=1
+
+    [ -n "${ADFS_HOST:-}" ] || read -r -p "What is your ADFS host? " ADFS_HOST
+    [ -n "${TFVARS:-}" ] || TFVARS=terraform.tfvars.json
+
+    _save_conf
+
+    if [ -r "${TFVARS}" ] ; then
+        echo "$0: Info: Using '$TFVARS' to load configuration" 1>&2
+        REGION="$(      _jqvar aws_region       "${TFVARS}"  )"
+        ADFS_HOST="$(   _jqvar adfs_host        "${TFVARS}"  )"
+        ROLE_ARN="$(    _jqvar aws_role_arn     "${TFVARS}"  )"
+        ASSUME_ROLE="$( _jqvar assume_role_arn  "${TFVARS}"  )"
+        _PROFILE="$(    _jqvar aws_profile      "${TFVARS}"  )"
+        [ -n "${_PROFILE}" ] && AWS_PROFILE="${_PROFILE}"
+        SESSION_DURATION="$(_jqvar aws_session_duration "${TFVARS}")"
+    fi
+
+    # In case these were previously set outside this script
+    unset AWS_ACCESS_KEY_ID
+    unset AWS_SECRET_ACCESS_KEY
+    unset AWS_SESSION_TOKEN
+}
+_main () {
+    _save_profile
+    if [ ${#PROFILES[@]} -lt 1 ] ; then
+        echo "$0: Pass this script a profile. List of profiles:"
+        _list_profiles | sed -e 's/^/\t/'
+        exit 1
+    fi
+    for profile in "${PROFILES[@]}" ; do
+        _aws_login "$profile"
+    done
+    _restore_profile
+
+    if [ -n "${ASSUME_ROLE:-}" ] ; then
+        _assume_role "$ASSUME_ROLE"
+    fi
+
+    if [ $# -gt 0 ] ; then
+        dashes="$1"; shift
+        if [ ! "$dashes" = "--" ] ; then
+            echo "$0: Error: missing argument '--'"
+            exit 1
+        fi
+        exec "$@"
+    fi
+}
+
+##################################################################################### 
+
+_init
+c=0
+FORCE=0
+declare -a PROFILES=()
+for opt in "$@" ; do
+    case $opt in
+        -h|--help)
+            _usage ;;
+        -f|--force)
+            FORCE=1
+            c=$(($c+1)) ;;
+        --)
+            break ;;
+        *)
+            PROFILES+=("$opt") ;;
+    esac
+done
+
+# Remove number of detected profiles from $@, to make room for "-- cmd [..]"
+shift $(( ${#PROFILES[@]} + $c ))
+
+_main "$@"

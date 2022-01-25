@@ -1,0 +1,252 @@
+#!/usr/bin/env sh
+# jenkinsctl - a command-line wrapper around building and running Jenkins
+set -eu
+set -a # automatically export any set variable (that isn't 'local')
+
+[ "${DEBUG:-0}" = "1" ] && set -x
+SCRIPTDIR="$(cd "$(dirname $0)" && pwd -P)"
+
+# the default name for the Jenkins manager container
+[ -n "${JENKINS_MANAGER_DOCKER_NAME:-}" ] || JENKINS_MANAGER_DOCKER_NAME=jenkins-manager
+[ -n "${JENKINS_MANAGER_DOCKER_TAG:-}" ] ||  JENKINS_MANAGER_DOCKER_TAG="latest"
+
+
+_readlinkf () {
+  set +x
+  [ "${1:-}" ] || return 1 ; local max_symlinks=40 target="$1" ; CDPATH=''
+  [ ! -e "${target%/}" ] && target=${1%"${1##*[!/]}"} ; [ -d "${target:-/}" ] && target="$target/"
+  cd -P . 2>/dev/null || return 1
+  while [ "$max_symlinks" -ge 0 ] && max_symlinks=$((max_symlinks - 1)); do
+    if [ ! "$target" = "${target%/*}" ]; then
+      case $target in
+        /*) cd -P "${target%/*}/" 2>/dev/null || break ;;
+        *) cd -P "./${target%/*}" 2>/dev/null || break ;;
+      esac ; target=${target##*/}
+    fi
+    [ ! -L "$target" ] && target="${PWD%/}${target:+/}${target}" && printf '%s\n' "${target:-/}" && return 0
+    link=$(ls -dl -- "$target" 2>/dev/null) || break ; target=${link#*" $target -> "}
+  done ; return 1
+}
+_pathwrap () {
+    [ -n "${JENKINS_MANAGER_DOCKERFILE:-}" ] && JENKINS_MANAGER_DOCKERFILE="$(_readlinkf "$JENKINS_MANAGER_DOCKERFILE")"
+    [ -n "${JENKINS_DOCKER_BUILD_CONTEXT:-}" ] && JENKINS_DOCKER_BUILD_CONTEXT="$(_readlinkf "$JENKINS_DOCKER_BUILD_CONTEXT")"
+    [ -n "${JENKINS_DOCKER_COMPOSE_FILE:-}" ] && JENKINS_DOCKER_COMPOSE_FILE="$(_readlinkf "$JENKINS_DOCKER_COMPOSE_FILE")"
+    [ -n "${JENKINS_DOCKER_COMPOSE_PROJECT_DIR:-}" ] && JENKINS_DOCKER_COMPOSE_PROJECT_DIR="$(_readlinkf "$JENKINS_DOCKER_COMPOSE_PROJECT_DIR")"
+    "$@"
+}
+_jenkins_container_run_local () {
+    local no_cache=0
+    [ $# -gt 0 ] && case "$1" in
+        --no-cache)         no_cache=1 ; shift ;;
+    esac
+    [ $no_cache -eq 1 ] && \
+        _jenkins_container_run_compose build --no-cache
+    _jenkins_container_run_compose up "$@"
+}
+_jenkins_container_run_compose () {
+    local project_dir jenkins_plugins
+    project_dir="$(dirname "$JENKINS_DOCKER_COMPOSE_FILE")"
+    [ -n "${JENKINS_DOCKER_COMPOSE_PROJECT_DIR:-}" ] && \
+        project_dir="$(_readlinkf "$JENKINS_DOCKER_COMPOSE_PROJECT_DIR")"
+    if [ -z "${JENKINS_DOCKER_GID:-}" ] && getent group docker >/dev/null ; then
+        JENKINS_DOCKER_GID="$(getent group docker | cut -d : -f 3)"
+    fi
+    [ -n "${JENKINS_PLUGINS_FILE:-}" ] && jenkins_plugins="$(cat "$JENKINS_PLUGINS_FILE")"
+    [ -n "${JENKINS_PLUGINS:-}" ] && jenkins_plugins="$JENKINS_PLUGINS"
+    export JENKINS_PLUGINS="$jenkins_plugins"
+    _pathwrap docker-compose \
+        -f "$JENKINS_DOCKER_COMPOSE_FILE" \
+        --project-directory "$project_dir" \
+        "$@"
+}
+_jenkins_container_run () {
+    [ $# -lt 1 ] && _usage "container run: Please pass 'local'"
+    [ $# -gt 0 ] && case "$1" in
+        local)        shift; _jenkins_container_run_local "$@" ;;
+        *)              _usage "container run: Invalid command '$1'"
+    esac
+}
+_jenkins_container_build_manager () {
+    _jenkins_container_build "$JENKINS_MANAGER_DOCKER_NAME" "$JENKINS_MANAGER_DOCKER_TAG" "$JENKINS_MANAGER_DOCKERFILE"
+}
+_jenkins_container_build_agent () {
+    _jenkins_container_build "$JENKINS_MANAGER_DOCKER_NAME" "$JENKINS_MANAGER_DOCKER_TAG" "$JENKINS_MANAGER_DOCKERFILE"
+}
+_jenkins_container_build () {
+    [ $# -eq 1 ] && case "$1" in
+        --manager)      _jenkins_container_build_manager ; return $? ;;
+        --agent)        _jenkins_container_build_agent ; return $? ;;
+    esac
+    [ $# -lt 3 ] && _usage "container build: Requires 'img_name', 'img_tag', 'dockerfile', and optionally 'docker_context'"
+    local img_name="$1" img_tag="$2" dockerfile="$3" docker_context jenkins_plugins
+    [ -n "${JENKINS_DOCKER_BUILD_CONTEXT:-}" ] && docker_context="${JENKINS_DOCKER_BUILD_CONTEXT}"
+    [ $# -eq 4 ] && docker_context="$4"
+    # This is so the container can add the 'jenkins' user to group $JENKINS_DOCKER_GID so it can
+    # access the /var/run/docker.sock file volume-mounted from the host
+    if [ -z "${JENKINS_DOCKER_GID:-}" ] && getent group docker >/dev/null ; then
+        JENKINS_DOCKER_GID="$(getent group docker | cut -d : -f 3)"
+    fi
+    # If undetected, just use 993 as the default
+    [ -n "${JENKINS_DOCKER_GID:-}" ] || JENKINS_DOCKER_GID=993
+    [ -n "${JENKINS_PLUGINS_FILE:-}" ] && jenkins_plugins="$(cat "$JENKINS_PLUGINS_FILE")"
+    [ -n "${JENKINS_PLUGINS:-}" ] && jenkins_plugins="$JENKINS_PLUGINS"
+    # If '$docker_context' is not specified, default to the path to the Dockerfile
+    [ -z "${docker_context:-}" ] && docker_context="$(dirname "$dockerfile")"
+    docker ${DOCKER_OPTS:-} build ${DOCKER_BUILD_OPTS:-} \
+        --pull \
+        -f "$dockerfile" \
+        --build-arg GID_DOCKER=${JENKINS_DOCKER_GID} \
+        --build-arg JENKINS_PLUGINS="${jenkins_plugins}" \
+        -t ${img_name}:${img_tag} \
+        "$docker_context"
+}
+
+_get_region () {
+    # Get current aws region if not passed
+    if [ -z "${AWS_DEFAULT_REGION:-}" ] ; then
+        AWS_DEFAULT_REGION=$(curl -s 169.254.169.254/latest/meta-data/placement/availability-zone | sed 's/.$//')
+    fi
+    if [ -z "${AWS_DEFAULT_REGION:-}" ] ; then
+        echo "$0: Error: please pass AWS_DEFAULT_REGION" && _usage
+    fi
+    export AWS_DEFAULT_REGION
+}
+
+_docker_login_ecr () {
+    _get_region
+    aws ecr get-login-password --region $AWS_DEFAULT_REGION \
+        | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+}
+_pull_from_ecr () {
+    _docker_login_ecr
+    _docker_pull "$@"
+    #ecr_id=$(aws ecr describe-repositories --repository-name "${remote_repo}" --query 'repositories[*].registryId' --output text)
+    #[ -z "${ecr_id}" ] && echo "$0: Error: No such registry '${ecr_id}'" && _usage
+    #full_repo="${ecr_id}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${remote_repo}"
+}
+_docker_pull () {
+    local repository="$1" tag="$2"
+    echo "$0: Info: Pulling '${repository}:${tag}'"
+    docker pull "${repository}:${tag}"
+}
+_push_to_ecr () {
+    _docker_login_ecr
+    _docker_push "$@"
+}
+_docker_push () {
+    local local_name="$1" local_tag="$2" remote_name="$3" remote_tag="$4"
+    echo "$0: Info: Pushing '$local_name:$local_tag' to '$remote_name:$remote_tag'"
+    docker tag "$local_name":"$local_tag" "$remote_name":"$remote_tag"
+    docker push "$remote_name":"$remote_tag"
+}
+_jenkins_container_pull () {
+    [ $# -lt 2 ] && _usage "jenkins_container_pull: Please pass 'repository' and 'remote_tag' options"
+    local repository="$1" remote_tag="$2"
+    _pull_from_ecr ${repository} ${remote_tag}
+}
+
+
+_jenkins_container_push_manager () {
+    _jenkins_container_push \
+        "$JENKINS_MANAGER_DOCKER_NAME" \
+        "$JENKINS_MANAGER_DOCKER_TAG" \
+        "$JENKINS_MANAGER_DOCKER_REPOSITORY" \
+        "$JENKINS_MANAGER_DOCKER_TAG"
+}
+_jenkins_container_push_agent () {
+    _jenkins_container_push \
+        "$JENKINS_AGENT_DOCKER_NAME" \
+        "$JENKINS_AGENT_DOCKER_TAG" \
+        "$JENKINS_AGENT_DOCKER_REPOSITORY" \
+        "$JENKINS_AGENT_DOCKER_TAG"
+}
+_jenkins_container_push () {
+    [ $# -eq 1 ] && case "$1" in
+        --manager)      _jenkins_container_push_manager ; return $? ;;
+        --agent)        _jenkins_container_push_agent ; return $? ;;
+    esac
+    [ $# -lt 4 ] && _usage "container push: Requires 'name', 'tag', 'remote_name', 'remote_tag'"
+    local local_name="$1" local_tag="$2" remote_name="$3" remote_tag="$4"
+    local local_id=$(docker image inspect -f "{{.Id}}" ${local_name}:${local_tag} | cut -d : -f 2 | cut -b 1-12)
+    # Push a tag matching the local image id, in addition to any other tag we want
+    _push_to_ecr ${local_name} ${local_tag} ${remote_name} ${remote_tag}
+}
+
+_jenkins_container () {
+    [ $# -lt 1 ] && _usage "Missing argument to 'container'"
+    local cmd="$1"; shift
+    case "$cmd" in
+        build)        _jenkins_container_build "$@" ;;
+        push)         _jenkins_container_push "$@" ;;
+        pull)         _jenkins_container_pull "$@" ;;
+        run)          _jenkins_container_run "$@" ;;
+        *)            _usage "container: Please pass one of 'build', 'push', 'pull', 'run'" ;;
+    esac
+}
+_CONTAINER_HELP="
+  container run local [--no-cache]
+                            Runs Jenkins Manager locally with Docker. Attempts to use Docker
+                            Compose, but if that doesn't exist, tries plain Docker.
+                            If --no-cache is passed, tries to run 'docker-compose build --no-cache'
+                            first.
+
+  container build --manager
+                            Builds the Jenkins Manager Docker container, using defaults.
+
+  container build --agent   
+                            Builds the Jenkins Agent Docker container, using defaults.
+
+  container build NAME TAG DOCKERFILE [DOCKERCONTEXT]
+                            Builds a Jenkins Docker container.
+
+  container pull REMOTE_NAME REMOTE_TAG
+                            Pulls a container REMOTE_NAME:REMOTE_TAG from a remote Docker registry.
+
+  container push NAME TAG REMOTE_NAME REMOTE_TAG
+                            Pushes a container NAME:TAG to a remote Docker registry
+                            with REMOTE_NAME and REMOTE_TAG. Also pushes a tag of
+                            the '.Id' of the local container image metadata..
+"
+
+_jenkins_update_plugins () {
+    # Fill in more logic here to do an automatic upgrade of the plugins
+    _jenkins_container_build
+}
+_jenkins_update () {
+    [ $# -lt 1 ] && _usage "Missing argument to 'update'"
+    local cmd="$1"; shift
+    case "$cmd" in
+        update)     _jenkins_container_update "$@" ;;
+    esac
+}
+_UPDATE_HELP="
+  update plugins
+                            Automatically version-bump a list of Jenkins plugins to use
+                            the latest secure versions, and trigger a re-build of the
+                            Jenkins Manager container.
+"
+
+_usage () {
+    [ $# -gt 0 ] && echo "Error: $1" >&2
+    cat <<EOUSAGE >&2
+Usage: $0 COMMAND
+
+Commands:
+$_UPDATE_HELP
+$_CONTAINER_HELP
+EOUSAGE
+    exit 1
+}
+
+[ $# -lt 1 ] && _usage
+
+#set -a
+. ./.jenkinsctlrc
+#set +a
+
+cmd="$1"; shift
+case "$cmd" in
+    update)                 _jenkins_update "$@" ;;
+    container)              _jenkins_container "$@" ;;
+    *)                      _usage "Invalid command '$cmd'";;
+esac
