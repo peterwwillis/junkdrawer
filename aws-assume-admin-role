@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# assume the admin role and execute arbitrary commands
+TOPLEVEL=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
+
+set -e -o pipefail
+set -u # fail on unset variables
+[ "${DEBUG:-}" = "1" ] && set -x
+
+[ -n "${TFVARS:-}" ] || TFVARS=terraform.tfvars.json
+if [ ! -r "$TFVARS" ] ; then
+    echo "$0: Error: please move to a directory with a readable '$TFVARS' file, or pass an environment variable TFVARS pointing to such a file."
+    exit 1
+fi
+
+# The ADFS host we are authenticating against
+#ADFS_HOST=
+
+# The region to login to
+AWS_REGION="$(jq -r ".aws_region" "${TFVARS}")"
+
+# The account we want to assume-role into.
+AWS_ACCOUNT_ID="$(jq -r ".aws_account_id" "${TFVARS}")"
+
+# The name of a role, in the aws_account_id account, with admin privileges over whatever we want to deploy into that account.
+ADMIN_DEPLOYMENT_ROLE_NAME="$(jq -r ".admin_deployment_role_name" "${TFVARS}")"
+
+# This is the role we pick when we log into AWS ADFS. From here we'll assume the above deployment role and AWS account.
+# This role arn is usually one from an 'admin AWS account', one which has permissions to role-switch into any AWS account.
+# You may have another option, such as a product-specific AWS account's role, but then that may not have permission to 
+# role-switch into the admin deployment role listed above.
+SWITCH_ROLE_ARN="$(jq -r ".switch_role_arn" "${TFVARS}")"
+
+# The product environment to use (prod, nonprod)
+ENVIRONMENT="$(jq -r ".environment" "${TFVARS}")"
+
+_check_vars () {
+    # jq will return "null" instead of "", so check for that and error
+    if [ -z "$ADFS_HOST" -o "$ADFS_HOST" = "null" ] \
+    || [ -z "$AWS_REGION" -o "$AWS_REGION" = "null" ] \
+    || [ -z "$AWS_ACCOUNT_ID" -o "$AWS_ACCOUNT_ID" = "null" ] \
+    || [ -z "$ADMIN_DEPLOYMENT_ROLE_NAME" -o "$ADMIN_DEPLOYMENT_ROLE_NAME" = "null" ] \
+    || [ -z "$SWITCH_ROLE_ARN" -o "$SWITCH_ROLE_ARN" = "null" ] \
+    || [ -z "$ENVIRONMENT" -o "$ENVIRONMENT" = "null" ] ; \
+    then
+        echo "$0: Error: All of the following must be set: ADFS_HOST, AWS_REGION, AWS_ACCOUNT_ID, ADMIN_DEPLOYMENT_ROLE_NAME, SWITCH_ROLE_ARN, ENVIRONMENT"
+        return 1
+    fi
+    return 0
+}
+
+_usage () {
+    if ! _check_vars ; then
+        echo ""
+    fi
+    echo "Usage: $0 COMMAND [ARG ..]"
+    echo ""
+    echo "This script does the following:"
+    echo "   - Reads values from the $TFVARS file"
+    echo "   - Unsets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN"
+    echo "   - Attempts to login to AWS with SSO using aws-adfs tool in '${AWS_REGION}' region"
+    echo "   - Assumes role '${ADMIN_DEPLOYMENT_ROLE_NAME}' in AWS account '${AWS_ACCOUNT_ID}'"
+    echo "   - Executes COMMAND and any arguments"
+    exit 1
+}
+
+aws_adfs_login () {
+    local ARGS=""
+    # an extension to aws profile args
+    if [ -n "${AWS_PROFILE:-}" ] ; then
+        ARGS="--profile ${AWS_PROFILE:-}"
+    fi
+    # Create a default profile if it doesn't exist
+    if ! aws configure get region $ARGS ; then
+        aws configure set region "$AWS_REGION" $ARGS
+    fi
+    if ! aws sts get-caller-identity 1>&2 ; then
+        mkdir -p ~/.aws
+        # SSPI can screw this up
+        aws-adfs login $ARGS --no-sspi --role-arn "$SWITCH_ROLE_ARN" --region "$AWS_REGION" --adfs-host "$ADFS_HOST" 1>&2;
+    fi
+}
+
+admin_assume_role () {
+    . "$TOPLEVEL"/bin/aws-assume-role "${AWS_ACCOUNT_ID}" "${ADMIN_DEPLOYMENT_ROLE_NAME}"
+}
+
+if [ $# -lt 1 ] ; then
+    _usage
+fi
+
+unset AWS_ACCESS_KEY_ID
+unset AWS_SECRET_ACCESS_KEY
+unset AWS_SESSION_TOKEN
+
+_check_vars || exit 1
+
+aws_adfs_login
+admin_assume_role
+
+exec "$@"

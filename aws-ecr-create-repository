@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+
+_repo_exists () {
+    local repo="$1"; shift
+    local found="$(aws ecr describe-repositories --query 'repositories[?repositoryName==`'"$repo"'`].repositoryName' --output text)"
+    if [ -z "$found" ] ; then
+        echo "$0: Repository '$repo' does not exist"
+        return 1
+    else
+        echo "$0: Repository '$repo' exists"
+        return 0
+    fi
+}
+_create_repo () {
+    local repo="$1"; shift
+    aws ecr create-repository \
+        --repository-name "$repo" \
+        --image-scanning-configuration scanOnPush=true
+}
+
+if [ $# -lt 1 ] ; then
+    echo "Usage: $0 REPO-NAME"
+    exit 1
+fi
+REPO="$1"; shift
+
+if ! _repo_exists "$REPO" ; then
+    _create_repo "$REPO"
+fi

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -e
+set -o pipefail
+
+function __getit () {
+    git fetch --tags --progress $GIT_REPO +refs/heads/*:refs/remotes/origin/* +refs/pull/$GITHUB_PR_ID/*:refs/remotes/origin/pr/$GITHUB_PR_ID/* --depth=1
+    PR_MERGE_COMMIT=$(git rev-parse origin/pr/$GITHUB_PR_ID/merge)
+    echo "GitHub commit for merge branch of PR $GITHUB_PR_ID: $PR_MERGE_COMMIT"
+    #git checkout origin/pr/$GITHUB_PR_ID/merge
+}
+
+if [ $# -lt 2 ] ; then
+    echo "Usage: $0 GIT_REPO GITHUB_PR_ID"
+    exit 1
+fi
+
+GIT_REPO="$1"
+GITHUB_PR_ID="$2"
+__getit

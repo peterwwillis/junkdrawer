@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Use 'dialog' to select an AWS profile and export it into your current shell.
+# 
+# Assuming this script is in your PATH, simply run:
+#   $ `aws-select-profile`
+
+[ "${DEBUG:-0}" = "1" ] && set -x
+
+_cleanup () { [ -n "$_TMP" ] && rm -rf "$_TMP" ; } ; trap _cleanup EXIT
+_list_profiles () {
+    grep '^\[profile ' ~/.aws/config | cut -d ' ' -f 2 | cut -d ']' -f 1 | sort -u
+}
+
+declare -a profiles=()
+for item in $(_list_profiles) ; do
+    profiles+=("$item" "$item")
+done
+
+_TMP=`mktemp`
+dialog --stdout --backtitle "AWS Profile" --menu "Select an AWS Profile to export" 25 80 20 "${profiles[@]}" > "$_TMP"
+selected_profile="$(cat "$_TMP")"
+
+export AWS_PROFILE="$selected_profile"
+echo "export AWS_PROFILE=$selected_profile"
+
+if aws --profile "$selected_profile" configure list | grep -q -e "region.*<not set>" ; then
+    declare -a regions=()
+    for region in $(aws --region us-east-1 ec2 describe-regions --query 'Regions[*].RegionName' --output text) ; do
+        regions+=("$region" "$region")
+    done
+    dialog --stdout --backtitle "AWS Region" --menu "Select a default AWS Region" 25 80 20 "${regions[@]}" > "$_TMP"
+    selected_region="$(cat "$_TMP")"
+fi
+
+if [ -n "${selected_region:-}" ] ; then
+    export AWS_DEFAULT_REGION="$selected_region"
+    echo "export AWS_DEFAULT_REGION=$selected_region"
+fi

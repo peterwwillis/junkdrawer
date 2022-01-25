@@ -1,0 +1,38 @@
+# vim: syntax=sh
+
+get-ec2-ip.sh -t SubProduct=yaji
+
+jq -n --rawfile key ssh_key.tmp '{ "ssh_private_key": $key, "hosts": [ { "resource_type": "EC2Instance", "resource_name": "Comanche", "instance_id": "i-00000000", "ipv4_address": "1.2.3.4", "aws_region": "us-west-1" } ] }' > secret.json
+aws secretsmanager put-secret-value --secret-id path/to/ssh/key --secret-string "$(cat secret.json)"
+
+# Import all AWS resources in a terraform state file by module resource name and ID
+jq -r '.modules[].resources | to_entries | .[] | [ "terraform", "import", .key, .value.primary.id ] | @sh' generated/aws/route53/terraform.tfstate | xargs -L1 env
+
+# Create a JSON document of an SSH private and public key
+python -c 'import sys,json; pr=open(sys.argv[1]);pu=open(sys.argv[2]);print(json.dumps({"ssh_private_key":pr.read(),"ssh_public_key":pu.read()}))' ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub
+
+# Jenkins Secrets Manager compatible ssh private key upload
+aws secretsmanager create-secret --name 'ssh-key' --secret-string 'file://id_rsa' --tags 'Key=jenkins:credentials:type,Value=sshUserPrivateKey' 'Key=jenkins:credentials:username,Value=joe' --description 'Acme Corp SSH key'
+
+# Check for a tcp connection
+timeout 1 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/3306'
+
+# Clear all but the last 500MB of journalctl logs
+journalctl --vacuum-size=500M
+
+# Cron to clear docker cache to only contain last 72 hours worth of files
+0 0 * * * docker system prune --filter "until=72h" -a -f
+
+# Get all flow log ids matching a log group name
+aws-adfs-profile-login legacy -- aws --region us-west-1 ec2 describe-flow-logs --filter Name=log-group-name,Values=all-vpc-flow-logs --query 'FlowLogs[*].FlowLogId' | jq -r .[]
+
+# Export CLI cached credentials to bash variables
+foo="$( cat ~/.aws/cli/cache/8f801a04a2c98f2d616846371fb50002e32943a0.json | jq -r '.Credentials |  [ "AWS_ACCESS_KEY_ID=" + (.AccessKeyId|@sh), "AWS_SECRET_ACCESS_KEY=" + (.SecretAccessKey|@sh), "AWS_SESSION_TOKEN=" + (.SessionToken|@sh) ] | .[]' ; echo "export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN" )"; eval "$foo"
+
+# Get the hosted zone Id of a Route53 zone with the most records
+aws route53 list-hosted-zones-by-name --dns-name foo.vpc.local. --query 'HostedZones[?Name==`foo.vpc.local.`] | reverse(sort_by(@, &ResourceRecordSetCount)) | [0].Id' --output text
+
+# Get the value of a Route53 CNAME
+aws route53 list-resource-record-sets --hosted-zone-id /hostedzone/XXXXXXXXXXXXXX --query 'ResourceRecordSets[?Name==`somename.foo.vpc.local.`&&Type==`CNAME`].ResourceRecords[0].Value' --output text
+# Or
+aws route53 list-resource-record-sets --hosted-zone-id /hostedzone/XXXXXXXXXXXXXX --query "ResourceRecordSets[?Name=='somename.foo.vpc.local.'&&Type=='CNAME'].ResourceRecords[0].Value" --output text
