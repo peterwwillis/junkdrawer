@@ -27,7 +27,7 @@ for my $f ( @ARGV ) {
 }
 
 for my $v (sort keys %v) {
-    unless ( grep( /variable\s+"$v"/, @vfd ) ) {
+    unless ( grep( /variable\s+"?$v"?/, @vfd ) ) {
         print "variable \"$v\" {}\n"
     }
 }
