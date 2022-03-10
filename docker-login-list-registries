@@ -1,0 +1,32 @@
+#!/usr/bin/env sh
+set -eu
+[ "${DEBUG:-0}" = "1" ] && set -x
+
+_usage () {
+    cat <<EOUSAGE
+Usage: $0 [REGISTRY ..]
+
+With no arguments, prints a list of cached Docker registries from ~/.docker/config.json
+With a REGISTRY argument, print the bearer token saved for that REGISTRY.
+Pass environment variable DOCKER_CONFIG to change config file location.
+EOUSAGE
+    exit 1
+}
+
+# Detect HOME if not set. Some systems don't have getent so try /etc/passwd too.
+HOME="${HOME:-$(getent passwd $(id -u) | cut -d : -f 6)}"
+HOME="${HOME:-$(grep "^$(id -un):" /etc/passwd | cut -d : -f 6)}"
+
+DOCKER_CONFIG="${DOCKER_CONFIG:-$HOME/.docker/config.json}"
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] ; then
+    _usage
+
+elif [ $# -lt 1 ] ; then
+    jq -r '.auths | keys | .[]' < "$DOCKER_CONFIG"
+
+else
+    for registry in "$@" ; do
+        jq -r --arg r "$registry" '.auths | .[$r] | .auth' < "$DOCKER_CONFIG"
+    done
+fi

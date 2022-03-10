@@ -4,11 +4,11 @@ use warnings;
 
 @ARGV > 0 || die "Usage: $0 VARIABLES-TF-FILE [TF-FILE ..]\n";
 
-my %v;
+my (%vars, %variables);
 
-open( my $vfd, shift @ARGV ) || die "Error: $!";
-my @vfd = <$vfd>;
-close($vfd);
+open( my $vfdata, shift @ARGV ) || die "Error: $!";
+my @vfdata = <$vfdata>;
+close($vfdata);
 
 unless ( @ARGV ) {
     @ARGV = glob "*.tf"
@@ -18,16 +18,20 @@ for my $f ( @ARGV ) {
 
     open( my $fd, $f ) || die "Error: $!";
     while ( <$fd> ) { 
-        while ( /var\.([a-zA-Z0-9_-]+)/g ) {
-            $v{$1}++
-        }
+        $vars{$1}++ while ( /var\.([a-zA-Z0-9_-]+)/g );
     }
     close($fd);
 
 }
 
-for my $v (sort keys %v) {
-    unless ( grep( /variable\s+"?$v"?/, @vfd ) ) {
-        print "variable \"$v\" {}\n"
-    }
+for (@vfdata) {
+    $variables{$1}++ if ( /variable\s+"?([^\s"]+)"?/ );
+}
+
+for my $v (sort keys %vars) {
+    print "variable \"$v\" {}\n" unless exists $variables{$v};
+}
+
+for my $v (sort keys %variables) {
+    print "# unused variable: $v\n" unless exists $vars{$v};
 }

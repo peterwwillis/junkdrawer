@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+set -eu
+[ "${DEBUG:-0}" = "1" ] && set -x
+
+_usage () {
+    cat <<EOUSAGE
+Usage: $0 REGISTRY USER_PASS
+
+Pass a REGISTRY and a "user:password" USER_PASS and receieve a list of registries
+from the remote Doker repository. If USER_PASS is '-', read USER_PASS from stdin.
+
+(the auth string in ~/.docker/config.json is a base64-encoded "user:password" string)
+EOUSAGE
+    exit 1
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ $# -lt 1 ] ; then
+    _usage
+fi
+
+DOCKER_REGISTRY="$1"
+DOCKER_USER_PASS="$2"
+if [ "$DOCKER_USER_PASS" = "-" ] ; then
+    read -r DOCKER_USER_PASS || true
+fi
+
+curl -fsSL -X GET -u "$DOCKER_USER_PASS" "https://$DOCKER_REGISTRY/v2/_catalog" | jq -r '.repositories[]'

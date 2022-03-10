@@ -36,3 +36,13 @@ aws route53 list-hosted-zones-by-name --dns-name foo.vpc.local. --query 'HostedZ
 aws route53 list-resource-record-sets --hosted-zone-id /hostedzone/XXXXXXXXXXXXXX --query 'ResourceRecordSets[?Name==`somename.foo.vpc.local.`&&Type==`CNAME`].ResourceRecords[0].Value' --output text
 # Or
 aws route53 list-resource-record-sets --hosted-zone-id /hostedzone/XXXXXXXXXXXXXX --query "ResourceRecordSets[?Name=='somename.foo.vpc.local.'&&Type=='CNAME'].ResourceRecords[0].Value" --output text
+
+# Undo the last commit
+git reset --soft HEAD~1
+
+# Reset to a specific commit
+git reset --hard 0ad5a7a6
+
+# View the entire Git history
+git log --all --full-history --stat
+
