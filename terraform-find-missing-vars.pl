@@ -7,7 +7,7 @@ use warnings;
 my (%vars, %variables);
 
 open( my $vfdata, shift @ARGV ) || die "Error: $!";
-my @vfdata = <$vfdata>;
+my @vfdata = map { chomp; /^\s*#/ ? () : $_ } <$vfdata>;
 close($vfdata);
 
 unless ( @ARGV ) {
@@ -17,15 +17,19 @@ unless ( @ARGV ) {
 for my $f ( @ARGV ) {
 
     open( my $fd, $f ) || die "Error: $!";
-    while ( <$fd> ) { 
+    while ( <$fd> ) {
+        chomp;
+        next if /^\s*#/;
         $vars{$1}++ while ( /var\.([a-zA-Z0-9_-]+)/g );
     }
     close($fd);
 
 }
 
-for (@vfdata) {
-    $variables{$1}++ if ( /variable\s+"?([^\s"]+)"?/ );
+for (@vfdata) { # i'm terrible at regex apparently
+    if ( /variable\s+("([a-zA-Z0-9_-]+)"|([a-zA-Z0-9_-]+))\s/ ) {
+        $variables{defined $2 ? $2 : $1}++
+    }
 }
 
 for my $v (sort keys %vars) {
