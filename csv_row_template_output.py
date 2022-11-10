@@ -48,6 +48,7 @@ class IterCsv(object):
             # length of digits for the number of rows
             fmtstr = "%s/row.%." + str(len(str(rowlen))) + "i.out"
             outfilename = fmtstr % (self.outdir, c)
+            print("Creating %s" % outfilename)
             with open(outfilename, "w") as f:
                 txt = t.substitute(row)
                 f.write( txt )
