@@ -5,7 +5,7 @@ set -eu
 
 NOTES_VERSION="0.1.0"
 NOTES_DIR="${NOTES_DIR:-$HOME/.notes.d}"
-NOTES_DEFAULT_EXT=".md"
+NOTES_DEFAULT_EXT="" # set this to give new notes a default extension
 NOTES_APP_NAME="${NOTES_APP_NAME:-$(basename "$0")}"
 
 __notes_list () {
@@ -18,7 +18,8 @@ __notes_list () {
             __notes_list "$_dir/$_newdir" "$@"
             return $?
         elif [ ! -e "$_dir/$1" ] ; then
-            __die "File not found: $_dir/$1"
+            __err "File not found: $_dir/$1"
+            return 1
         fi
     elif [ -d "$_dir" ] ; then
         for note in "$_dir"/* ; do
@@ -47,28 +48,19 @@ __notes_add () {
     fi
     _newfile="$NOTES_DIR/$_newfile"
     mkdir -p "$(dirname "$_newfile")"
-
-    _tmpfile="$(mktemp "$NOTES_DIR/.notes.XXXXXX")"
-    __default_editor "$_tmpfile"
-    if [ ! -s "$_tmpfile" ] ; then
-        __die "tmpfile was empty; not creating new note"
-    fi
-
-    mv -n "$_tmpfile" "$_newfile"
+    touch "$_newfile"
 }
 
 __notes_edit () {
-    if [ $# -lt 1 ] ; then
-        __die "Not enough arguments: edit command requires at least one argument"
-    fi
+    [ $# -lt 1 ] && __die "Command requires at least one argument"
     for arg in "$@" ; do
         if [ -d "$NOTES_DIR/$arg" ] ; then
             __die "File is a directory: $NOTES_DIR/$arg"
-        elif [ -e "$NOTES_DIR/$arg" ] ; then
-            __default_editor "$NOTES_DIR/$arg"
-        else
-            __die "Could not find note '$arg'"
         fi
+        if ! __notes_list "$NOTES_DIR" "$arg" ; then
+            __notes_add "$arg"
+        fi
+        __default_editor "$NOTES_DIR/$arg"
     done
 }
 
@@ -87,11 +79,12 @@ __notes_delete () {
 }
 
 __default_editor () {
-    _editors="${EDITOR:-mvim gvim vim vi emacs nano pico}"
+    _editors="${EDITOR:-open mvim gvim vim vi emacs nano pico}"
     for editor in $_editors ; do
         if command -v "$editor" >/dev/null 2>&1 ; then
             case "$editor" in
-                mvim|gvim)      $editor --nofork "$@" ; ;;
+                open)           open "$@" ;;
+                mvim|gvim)      $editor --nofork "$@" ;;
                 *)              $editor "$@" ;;
             esac
             return $?
@@ -128,26 +121,27 @@ EOUSAGE
     __die
 }
 
+__err () { echo "$NOTES_APP_NAME: Error: $*" ; }
 __die () {
-    [ $# -gt 0 ] && echo "$NOTES_APP_NAME: Error: $*"
+    [ $# -gt 0 ] && __err "$@"
     exit 1
 }
 
 __main () {
     [ -d "$NOTES_DIR" ] || mkdir -p "$NOTES_DIR"
-    [ "$_set_verbose_mode" -eq 1 ] && set -x
-    if [ "$_notes_add" -eq 1 ] ; then
+    [ "$_set_verbose_mode" -gt 0 ] && set -x
+    if [ "$_notes_add" -gt 0 ] ; then
         __notes_add "$@"
-    elif [ "$_notes_edit" -eq 1 ] ; then
+    elif [ "$_notes_edit" -gt 0 ] ; then
         __notes_edit "$@"
-    elif [ "$_notes_delete" -eq 1 ] ; then
-        __notes_delete "$@"
-    elif [ "$_run_version" -eq 1 ] ; then
-        __run_version "$@"
-    elif [ "$_run_usage" -eq 1 ] ; then
-        __usage
-    elif [ "$_notes_list" -eq 1 ] || [ $# -lt 1 ] ; then
+    elif [ "$_notes_list" -gt 0 ] ; then
         __notes_list "$NOTES_DIR" "$@"
+    elif [ "$_run_version" -gt 0 ] ; then
+        __run_version "$@"
+    elif [ "$_notes_delete" -gt 0 ] ; then
+        __notes_delete "$@"
+    else
+        __usage
     fi
 }
 
@@ -155,10 +149,10 @@ _notes_add=0 _notes_list=0 _notes_edit=0 _notes_delete=0 _run_usage=0
 _run_version=0 _set_verbose_mode=0
 while getopts "aledhVv" arg ; do
     case "$arg" in
-        a)          _notes_add=1 ;;
-        l)          _notes_list=1 ;;
-        e)          _notes_edit=1 ;;
-        d)          _notes_delete=1 ;;
+        a)          _notes_add=$((_notes_add+1)) ;;
+        l)          _notes_list=$((_notes_list+1)) ;;
+        e)          _notes_edit=$((_notes_edit+1)) ;;
+        d)          _notes_delete=$((_notes_delete+1)) ;;
         h)          _run_usage=1 ;;
         V)          _run_version=1 ;;
         v)          _set_verbose_mode=1 ;;
