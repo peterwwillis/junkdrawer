@@ -5,7 +5,7 @@ set -eu
 
 NOTES_VERSION="0.1.0"
 NOTES_DIR="${NOTES_DIR:-$HOME/.notes.d}"
-NOTES_DEFAULT_EXT="" # set this to give new notes a default extension
+NOTES_DEFAULT_EXT=".md"
 NOTES_APP_NAME="${NOTES_APP_NAME:-$(basename "$0")}"
 
 __notes_list () {
@@ -44,7 +44,7 @@ __notes_add () {
     if [ $# -gt 1 ] ; then
         __die "Too many arguments (command allows only one)"
     elif [ $# -eq 1 ] ; then  
-        _newfile="${1}$NOTES_DEFAULT_EXT"
+        _newfile="${1}"
     fi
     _newfile="$NOTES_DIR/$_newfile"
     mkdir -p "$(dirname "$_newfile")"
