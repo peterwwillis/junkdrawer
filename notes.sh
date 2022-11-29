@@ -6,6 +6,7 @@ set -eu
 NOTES_VERSION="0.1.0"
 NOTES_DIR="${NOTES_DIR:-$HOME/.notes.d}"
 NOTES_DEFAULT_EXT=".md"
+NOTES_APP_NAME="${NOTES_APP_NAME:-$(basename "$0")}"
 
 __notes_list () {
     _dir="$1"; shift 1
@@ -31,12 +32,8 @@ __notes_list () {
 }
 __note_list () {
     _note="$1"; shift
-    _bn="$(basename "$_note")"
-    if [ -d "$_note" ] ; then
-        printf "%s\n" "$_note/" | sed -E "s?^$NOTES_DIR/??g; s?//?/?g"
-    else
-        printf "%s\n" "$_note" | sed -E "s?^$NOTES_DIR/??g; s?//?/?g"
-    fi
+    [ -d "$_note" ] && _note="$_note/"
+    printf "%s\n" "$_note" | sed -E "s?^$NOTES_DIR/??g; s?//?/?g"
 }
 
 __notes_add () {
@@ -48,7 +45,7 @@ __notes_add () {
     elif [ $# -eq 1 ] ; then  
         _newfile="${1}$NOTES_DEFAULT_EXT"
     fi
-    _newfile="$NOTES_DIR/$(__make_fancy_fn "$_newfile")"
+    _newfile="$NOTES_DIR/$_newfile"
     mkdir -p "$(dirname "$_newfile")"
 
     _tmpfile="$(mktemp "$NOTES_DIR/.notes.XXXXXX")"
@@ -58,13 +55,6 @@ __notes_add () {
     fi
 
     mv -n "$_tmpfile" "$_newfile"
-}
-
-__make_fancy_fn () {
-    _name="$1"
-    _newfn="$(printf "%s\n" "$_name" | sed -e 's?\.d??g; s?/?\.d\/?g')"
-    _newfn_dn="$(dirname "$_newfn")"
-    printf "%s\n" "$_newfn"
 }
 
 __notes_edit () {
@@ -110,7 +100,7 @@ __default_editor () {
 }
 
 __run_version () {
-    printf "%s v%s\n" "$0" "$NOTES_VERSION"
+    printf "%s v%s\n" "$NOTES_APP_NAME" "$NOTES_VERSION"
 }
 
 __cleanup () {
@@ -124,7 +114,7 @@ trap __cleanup EXIT
 
 __usage () {
     cat <<EOUSAGE
-Usage: $0 [OPTS] COMMAND [..]
+Usage: $NOTES_APP_NAME [OPTS] COMMAND [..]
 
 Options:
   -a [NOTE]             Add a NOTE
@@ -139,7 +129,7 @@ EOUSAGE
 }
 
 __die () {
-    [ $# -gt 0 ] && echo "$0: Error: $*"
+    [ $# -gt 0 ] && echo "$NOTES_APP_NAME: Error: $*"
     exit 1
 }
 
