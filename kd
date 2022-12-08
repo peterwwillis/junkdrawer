@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# kd - kubernetes command dialog wrapper
+# Copyright (C) 2022  Peter Willis
+#
+# kd is a wrapper around common kubernetes commands. it supplies a text UI using
+# the 'dialog' tool. the intent is to simplify running various tasks without needing
+# to remember commands or rely on bash-completion.
+# 
+# just run 'kd' and select a command, or select DEFAULT to always use the defaults.
+
+set -eu
+[ "${DEBUG:-0}" = "1" ] && set -x
+
+__cleanup () {
+    if [ -n "${tmpfile:-}" ] ; then rm -f "$tmpfile" ; fi
+}
+trap __cleanup EXIT
+
+__err () { printf "%s: Error: %s\n" "$0" "$*" 1>&2 ; }
+__errexit () { __err "$*" ; exit 1 ; }
+
+__cmd_commands () {
+    if [ $# -lt 1 ] ; then
+        echo "ctx"
+        echo "ns"
+    else
+        local cmd="$1"; shift
+        __cmd_"$cmd" "$@"
+    fi
+}
+__cmd_default () {
+    __sel_output __cmd_commands
+}
+__cmd_ctx () {
+    __sel_output kubectx "$(kubectx -c)"
+}
+__cmd_ns () {
+    __sel_output kubens "$(kubens -c)"
+}
+
+__sel_output () {
+    local cmd="$1"; shift
+    local current="${1:-}"
+    local output
+    declare -a sellist=( $("$cmd") )
+    declare -a execlist=(dialog --menu "Select a context" 25 80 20 0 "(DEFAULT)")
+    for i in `seq 1 ${#sellist[@]}` ; do
+        if [ -n "${current:-}" ] && [ "${sellist[$((i-1))]}" = "$current" ] ; then
+            execlist+=("$i" "${sellist[$((i-1))]} (DEFAULT)")
+        else
+            execlist+=("$i" "${sellist[$((i-1))]}")
+        fi
+    done
+    tmpfile="$(mktemp)"
+    "${execlist[@]}" 2>"$tmpfile"
+    output="$(cat "$tmpfile")"
+    if [ "$output" = "0" ] ; then
+        return 0
+    elif [ "$output" -lt 0 ] ; then
+        __errexit "Invalid dialog output '$output'"
+    else
+        "$cmd" "${sellist[$(($output-1))]}"
+    fi
+}
+
+__main () {
+    if [ "$_run_usage" = "1" ] ; then
+        __usage
+    elif [ $# -lt 1 ] ; then
+        __cmd_default
+    elif [ $# -gt 0 ] ; then
+        local cmd="$1"; shift
+        if [ "$cmd" = "ctx" ] ; then
+            __cmd_ctx "$@"
+        elif [ "$cmd" = "ns" ] ; then
+            __cmd_ns "$@"
+        else
+            __err "Not a valid command: '$cmd'"
+            __usage
+        fi
+    fi
+}
+
+__usage () {
+    cat <<EOUSAGE
+Usage: $0 [OPTIONS] COMMAND
+
+Displays a terminal dialog window to select from Kubernetes resources.
+
+Commands:
+    ctx             Display or select a Kubernetes context
+    ns              Display or select a Kubernetes namespace
+EOUSAGE
+    exit 1
+}
+
+_run_usage=0 _run_opt_version=0
+while getopts "hHv" arg ; do
+    case "$arg" in
+        h)          _run_usage=1 ;;
+        v)          _run_opt_version=1 ;;
+        *)        _die "Unknown argument '$arg'" ;;
+    esac
+done
+shift $((OPTIND-1))
+
+__main "$@"
