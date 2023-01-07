@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-import sys, requests, csv
+import sys
+import csv
+import netrc # apparently just importing this makes 'requests' do the right thing!
+
+import requests
 from requests.auth import HTTPBasicAuth
 
 team = sys.argv[1]
@@ -8,10 +12,14 @@ team = sys.argv[1]
 username = None
 password = None
 
+# apparently don't need this!! happens automatically! thanks, requests
+#net = netrc.netrc()
+#netauth = net.authenticators("api.bitbucket.org")
+
 full_repo_list = []
 
-# Request 100 repositories per page (and only their slugs), and the next page URL
-#next_page_url = 'https://api.bitbucket.org/2.0/repositories/%s?pagelen=10&fields=next,values.links.clone.href,values.slug' % team
+# Request 10 repositories per page (and only their slugs), and the next page URL
+#next_page_url = 'https://api.bitbucket.org/2.0/repositories/%s?pagelen=10&fields=next,values.links.clone.href,values.slug,name' % team
 next_page_url = 'https://api.bitbucket.org/2.0/repositories/%s' % team
 
 csvw = csv.writer(sys.stdout, quoting=csv.QUOTE_NONNUMERIC)
