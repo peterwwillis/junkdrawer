@@ -1,0 +1,22 @@
+#!/bin/sh
+
+docker image ls my-1password-op >/dev/null \
+    || docker build -t my-1password-op - >/dev/null <<EODOCKERFILE
+FROM 1password/op
+USER root
+RUN mkdir -p /home/$(id -un) && chown $(id -u):$(id -g) /home/$(id -un)
+USER opuser
+EODOCKERFILE
+
+mkdir -p "$HOME/.config/op"
+chmod 0700 "$HOME/.config/op"
+
+docker run \
+    --rm \
+    -it \
+    -u $(id -u) \
+    -v /etc/passwd:/etc/passwd:ro \
+    -v /etc/group:/etc/group:ro \
+    -v "$HOME/.config/op:/home/$(id -un)/.config/op" \
+    -w "/home/$(id -un)" \
+    my-1password-op op "$@"

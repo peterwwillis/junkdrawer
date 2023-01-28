@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+flatpak run org.mozilla.Thunderbird "$@"
