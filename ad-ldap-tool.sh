@@ -79,7 +79,7 @@ _adsearch_name () {
 
 ### Generic functions
 _cmds () {
-    grep "^_adsearch_" "$0" | sed -e 's/^_adsearch_\([0-9a-zA-Z_]\+\)[[:space:]]\+.*/\1/'
+    grep "^_adsearch_" "$0" | sed -E 's/^_adsearch_([0-9a-zA-Z_]+)[[:space:]]+.*/\1/'
 }
 _usage () {
     cmds=$(_cmds | sed -e 's/^/   /')
