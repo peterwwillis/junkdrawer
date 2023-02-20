@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+
+docker run \
+    --rm \
+    -it \
+    -u "$(id -u):$(id -g)" \
+    -v /etc/passwd:/etc/passwd:ro \
+    -v /etc/group:/etc/group:ro \
+    -v /etc/shadow:/etc/shadow:ro \
+    -v "$HOME/.config/gcloud:$HOME/.config/gcloud:rw" \
+    google/cloud-sdk:alpine gcloud "$@"

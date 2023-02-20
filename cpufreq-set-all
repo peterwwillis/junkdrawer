@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+set -eu
+[ "${DEBUG:-0}" = "1" ] && set -x
+
+if [ $# -lt 1 ] ; then
+    echo "Usage: $0 CPUFREQ-ARGS .."
+    echo "Sets 'cpufreq-set' for each CPU (-c option)"
+    exit 1
+fi
+
+USER="${USER:-$(id -un)}"
+SUDO="${SUDO:-}"
+[ "$USER" = "root" ] || SUDO="${SUDO:-sudo}"
+
+NUMCPUS="$(cat /proc/cpuinfo  | grep -E '^processor\s*:' | wc -l)"
+for i in $(seq 0 $((NUMCPUS-1))) ; do
+    echo $SUDO cpufreq-set -c "$i" "$@"
+    $SUDO cpufreq-set -c "$i" "$@"
+done

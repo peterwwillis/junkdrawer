@@ -2,4 +2,4 @@
 # ssh wrapper - override TERM setting so that ssh will send the one we want remotely
 #unset TERMCAP
 export TERM=linux
-/usr/bin/ssh "$@"
+exec /usr/bin/ssh "$@"
