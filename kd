@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# kd - kubernetes command dialog wrapper
+# kd - kubernetes command terminal UI wrapper
 # Copyright (C) 2022  Peter Willis
 #
-# kd is a wrapper around common kubernetes commands. it supplies a text UI using
-# the 'dialog' tool. the intent is to simplify running various tasks without needing
-# to remember commands or rely on bash-completion.
+# kd is a wrapper around common kubernetes commands to simplify running various
+# k8s tasks without needing to remember commands or rely on bash-completion.
+# It supplies a text UI (optionally using the 'dialog' tool) for prompts.
 # 
-# just run 'kd' and select a command, or select DEFAULT to always use the defaults.
+# Run 'kd' and select a command, or select DEFAULT to always use the defaults.
+# 
 
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
+
+HAS_DIALOG=0
 
 __cleanup () {
     if [ -n "${tmpfile:-}" ] ; then rm -f "$tmpfile" ; fi
@@ -21,21 +24,32 @@ __errexit () { __err "$*" ; exit 1 ; }
 
 __cmd_commands () {
     if [ $# -lt 1 ] ; then
-        echo "ctx"
-        echo "ns"
+        echo "kubectx"
+        echo "kubens"
     else
-        local cmd="$1"; shift
-        __cmd_"$cmd" "$@"
+        # Run any '__cmd_*' function name passed, with arguments
+        local cmd="$1"; shift; __cmd_"$cmd" "$@"
     fi
 }
-__cmd_default () {
-    __sel_output __cmd_commands
-}
-__cmd_ctx () {
+__cmd_default () { __sel_output __cmd_commands ; }
+__cmd_kubectx () {
+    command -v kubectx >/dev/null || \
+        __kube_install_or_fail "kubectx" "ctx"
     __sel_output kubectx "$(kubectx -c)"
 }
-__cmd_ns () {
+__cmd_kubens () {
+    command -v kubectx >/dev/null || \
+        __kube_install_or_fail "kubens" "ns"
     __sel_output kubens "$(kubens -c)"
+}
+
+__kube_install_or_fail () {
+    cmd="$1" krewarg="$2"
+    kubectl krew version >/dev/null 2>&1 && \
+        kubectl krew install "$krewarg"
+    if [ $? -ne 0 ] ; then
+        __errexit "Please install command '$cmd'"
+    fi
 }
 
 __sel_output () {
@@ -43,41 +57,75 @@ __sel_output () {
     local current="${1:-}"
     local output
     declare -a sellist=( $("$cmd") )
-    declare -a execlist=(dialog --menu "Select a context" 25 80 20 0 "(DEFAULT)")
+    declare -a execlist=()
+
+    if [ $HAS_DIALOG -eq 1 ] ; then
+        execlist=(dialog --menu "Select a context" 25 80 20 0 "(DEFAULT)")
+    else
+        execlist=("Select a context:")
+    fi
+
+    # Make the list of options, and identify the currently selected option
     for i in `seq 1 ${#sellist[@]}` ; do
         if [ -n "${current:-}" ] && [ "${sellist[$((i-1))]}" = "$current" ] ; then
-            execlist+=("$i" "${sellist[$((i-1))]} (DEFAULT)")
+            execlist+=("$i" "${sellist[$((i-1))]} (SELECTED)")
         else
             execlist+=("$i" "${sellist[$((i-1))]}")
         fi
     done
-    tmpfile="$(mktemp)"
-    "${execlist[@]}" 2>"$tmpfile"
-    output="$(cat "$tmpfile")"
+
+    if [ $HAS_DIALOG -eq 1 ] ; then
+        tmpfile="$(mktemp)"
+        "${execlist[@]}" 2>"$tmpfile"
+        output="$(cat "$tmpfile")"
+    else
+        printf "\n%s\n" "${execlist[0]}"
+        c=1
+        while [ $c -lt ${#execlist[@]} ] ; do
+            printf "  %s  %s\n"  "${execlist[$c]}"  "${execlist[$((c+1))]}"
+            c=$((c+2))
+        done
+        read -r -p "Choice: " output
+    fi
+
+    if [ "${output:-}" = "" ] ; then
+        output="0"
+    fi
+
     if [ "$output" = "0" ] ; then
         return 0
     elif [ "$output" -lt 0 ] ; then
-        __errexit "Invalid dialog output '$output'"
+        __errexit "Invalid output '$output'"
     else
         "$cmd" "${sellist[$(($output-1))]}"
     fi
 }
 
 __main () {
+    if command -v dialog >/dev/null ; then
+        HAS_DIALOG=1
+    fi
+
     if [ "$_run_usage" = "1" ] ; then
         __usage
+
     elif [ $# -lt 1 ] ; then
         __cmd_default
+
     elif [ $# -gt 0 ] ; then
         local cmd="$1"; shift
+
         if [ "$cmd" = "ctx" ] ; then
             __cmd_ctx "$@"
+
         elif [ "$cmd" = "ns" ] ; then
             __cmd_ns "$@"
+
         else
             __err "Not a valid command: '$cmd'"
             __usage
         fi
+
     fi
 }
 
