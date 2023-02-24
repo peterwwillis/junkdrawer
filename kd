@@ -111,21 +111,8 @@ __main () {
 
     elif [ $# -lt 1 ] ; then
         __cmd_default
-
-    elif [ $# -gt 0 ] ; then
-        local cmd="$1"; shift
-
-        if [ "$cmd" = "ctx" ] ; then
-            __cmd_ctx "$@"
-
-        elif [ "$cmd" = "ns" ] ; then
-            __cmd_ns "$@"
-
-        else
-            __err "Not a valid command: '$cmd'"
-            __usage
-        fi
-
+    else
+        __cmd_commands "$@"
     fi
 }
 
