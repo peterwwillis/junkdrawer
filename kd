@@ -24,6 +24,7 @@ __errexit () { __err "$*" ; exit 1 ; }
 
 __cmd_commands () {
     if [ $# -lt 1 ] ; then
+        echo "gcloud_config_configurations"
         echo "kubectx"
         echo "kubens"
     else
@@ -31,16 +32,25 @@ __cmd_commands () {
         local cmd="$1"; shift; __cmd_"$cmd" "$@"
     fi
 }
-__cmd_default () { __sel_output __cmd_commands ; }
+__cmd_default () { __sel_output __cmd_commands __cmd_commands ; }
 __cmd_kubectx () {
     command -v kubectx >/dev/null || \
         __kube_install_or_fail "kubectx" "ctx"
-    __sel_output kubectx "$(kubectx -c)"
+    __sel_output kubectx kubectx "$(kubectx -c)"
 }
 __cmd_kubens () {
     command -v kubectx >/dev/null || \
         __kube_install_or_fail "kubens" "ns"
-    __sel_output kubens "$(kubens -c)"
+    __sel_output kubens kubens "$(kubens -c)"
+}
+__cmd_gcloud_config_configurations () {
+    command -v gcloud >/dev/null || \
+        { echo "Error: please install gcloud" ; exit 1 ; }
+    local current="$(gcloud config configurations list | tail -n +2 | grep -E '^[a-zA-Z0-9_-]+[[:space:]]+True' | awk '{print $1}')"
+    __sel_output \
+        "gcloud config configurations list | tail -n +2 | awk '{print \$1}'" \
+        "gcloud config configurations activate" \
+        "$current"
 }
 
 __kube_install_or_fail () {
@@ -53,10 +63,14 @@ __kube_install_or_fail () {
 }
 
 __sel_output () {
-    local cmd="$1"; shift
+    local listcmd="$1"
+    local selcmd="$2"
+    shift 2
     local current="${1:-}"
-    local output
-    declare -a sellist=( $("$cmd") )
+    local output tmpoutput
+    # hack to stop special chars (pipe symbol) from being escaped by bash
+    eval "tmpoutput=\$($listcmd)"
+    declare -a sellist=( $tmpoutput )
     declare -a execlist=()
 
     if [ $HAS_DIALOG -eq 1 ] ; then
@@ -97,7 +111,7 @@ __sel_output () {
     elif [ "$output" -lt 0 ] ; then
         __errexit "Invalid output '$output'"
     else
-        "$cmd" "${sellist[$(($output-1))]}"
+        $selcmd "${sellist[$(($output-1))]}"
     fi
 }
 
@@ -123,8 +137,10 @@ Usage: $0 [OPTIONS] COMMAND
 Displays a terminal dialog window to select from Kubernetes resources.
 
 Commands:
-    ctx             Display or select a Kubernetes context
-    ns              Display or select a Kubernetes namespace
+    gcloud_config_configurations
+                        Display or select a GCloud configuration
+    kubectx             Display or select a Kubernetes context
+    kubens              Display or select a Kubernetes namespace
 EOUSAGE
     exit 1
 }
