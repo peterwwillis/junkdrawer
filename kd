@@ -46,9 +46,9 @@ __cmd_kubens () {
 __cmd_gcloud_config_configurations () {
     command -v gcloud >/dev/null || \
         { echo "Error: please install gcloud" ; exit 1 ; }
-    local current="$(gcloud config configurations list | tail -n +2 | grep -E '^[a-zA-Z0-9_-]+[[:space:]]+True' | awk '{print $1}')"
+    local current="$(gcloud config configurations list --format="csv(is_active,name)" | tail -n +2 | grep -E '^True,' | awk -F , '{print $2}')"
     __sel_output \
-        "gcloud config configurations list | tail -n +2 | awk '{print \$1}'" \
+        "gcloud config configurations list --format=\"csv(name)\" | tail -n +2 | awk '{print \$1}'" \
         "gcloud config configurations activate" \
         "$current"
 }
