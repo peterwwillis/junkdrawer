@@ -1,20 +1,24 @@
 #!/usr/bin/env sh
-set -eu
+# envsubst.sh - POSIX-compatible version of envsubst
+# 
+# Feed it text on standard input, and it replaces ${FOO} in the text with
+# the value of $FOO in the output.
+
+set -u
 [ "${DEBUG:-0}" = "1" ] && set -x
 
-# Replace ${FOO} with the value of $FOO
-_envsubst () {
-    set +e ; while IFS= read -r foo ; do
-        while : ; do
-            match="$(expr "$foo" : '.*${\([a-zA-Z0-9_]*\)}')"
-            [ -n "$match" ] || break
-            eval new="\${$match:-}"
-            # shellcheck disable=SC2154
-            foo="$(printf "%s\n" "$foo" | sed -e "s?\${$match}?$new?g")"
-            continue
-        done
-        printf "%s\n" "$foo"
-    done ; set -e
-}
-
-_envsubst
+while IFS= read -r foo ; do
+    while : ; do
+        m=1  match="$(expr "$foo" : '.*${\([a-zA-Z0-9_]*\)}')"
+        if   [ -z "$match" ]
+        then m=2  match="$(expr "$foo" : '.*$\([a-zA-Z0-9_]*\)')"
+        fi
+        [ -n "$match" ] || break
+        eval new="\${$match:-}"
+        if   [ $m -eq 1 ]
+        then foo="${foo%\$\{$match\}*}${new}${foo#*\$\{$match\}}"
+        else foo="${foo%\$$match*}${new}${foo#*\$$match}"
+        fi
+    done
+    printf "%s\n" "$foo"
+done
