@@ -46,3 +46,13 @@ git reset --hard 0ad5a7a6
 # View the entire Git history
 git log --all --full-history --stat
 
+# View GCP projects list
+gcloud projects list --format="table(projectId)"
+
+# List buckets associated with a GCP project
+gsutil ls -p PROJECT
+
+# View IAM members associated with a GCP bucket
+gsutil iam get gs://BUCKET/ --format=json | jq -r '.bindings[].members[]'
+
+

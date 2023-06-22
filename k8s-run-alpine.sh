@@ -8,9 +8,11 @@
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 
+pod_name="alpine-$(id -un)-$$"
+
 # Pod name is 'busybox-USERNAME-PID'
 kubectl run \
-    "alpine-$(id -un)-$$" \
+    "${pod_name}" \
     --image=alpine \
     --restart=Never \
     --rm=true \
