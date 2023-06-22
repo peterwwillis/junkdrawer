@@ -35,7 +35,11 @@ while IFS= read -r foo ; do
             # Otherwise try the replacement without the ${FOO} form
             prefix="${foo%\$$match*}"
             suffix="${foo#*\$$match}"
-            foo="${prefix}${new}${suffix}"
+            if [ ! "$suffix" = "$foo" ] ; then
+                foo="${prefix}${new}${suffix}"
+            else
+                break
+            fi
         fi
     done
     printf "%s\n" "$foo"
