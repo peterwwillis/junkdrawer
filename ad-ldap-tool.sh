@@ -76,6 +76,13 @@ _adsearch_name () {
     name="$(printf "%s" "$name" | sed -e 's/\([()]\)/\\\1/g')" 
     _adsearch "(name=$name)" "$@"
 }
+_adsearch_mail () {
+    [ $# -gt 0 ] || _err "Usage: $0 mail EMAIL_ADDRESS [ATTRIBUTE ..]
+    This looks up a record by the person's name. Example:
+        $0 mail 'foo@bar.com'"
+    local mail="$1"; shift
+    _adsearch "(mail=$mail)" "$@"
+}
 
 ### Generic functions
 _cmds () {

@@ -4,6 +4,13 @@ set -eu
 
 __err () { echo "$0: Error: $*" ; exit 1 ; }
 
+if [ $# -lt 1 ]  ; then
+    cat <<EOUSAGE
+Usage: $0 URL
+EOUSAGE
+    exit 1
+fi
+
 url="$1"
 
 host="$( echo "$url" | sed -E 's!^https?://([a-zA-Z0-9.-]+)[^a-zA-Z0-9.-]?.*!\1!g')"
