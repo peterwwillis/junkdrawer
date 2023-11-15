@@ -2,7 +2,7 @@
 [ "${DEBUG:-0}" = "1" ] && set -x
 
 CWD="$(pwd)"
-CWD_B="$(basedir "$CWD")"
+CWD_B="$(basename "$CWD")"
 BACKUP_DIR="../$CWD_B.bak"
 
 # Make a backup directory
