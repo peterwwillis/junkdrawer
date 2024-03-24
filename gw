@@ -80,7 +80,7 @@ _gw_switch () {
     local prefix="$(git rev-parse --show-prefix)" prefixdir
     local execlist worktree_list c tmpfile result ret current
     local branchname="$(git rev-parse --abbrev-ref HEAD)"
-    execlist=(dialog --menu "Select a branch" 25 80 20 -1 "(DEFAULT)")
+    execlist=(dialog --menu "Select a branch" 0 0 0 -1 "(DEFAULT)")
     _get_worktree_list
     c=0; while [ $c -lt ${#worktree_list[@]} ] ; do
         current="${worktree_list[$((c+1))]}"

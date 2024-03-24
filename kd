@@ -74,7 +74,7 @@ __sel_output () {
     declare -a execlist=()
 
     if [ $HAS_DIALOG -eq 1 ] ; then
-        execlist=(dialog --menu "Select a context" 25 80 20 0 "(DEFAULT)")
+        execlist=(dialog --menu "Select a context" 0 0 0 0 "(DEFAULT)")
     else
         execlist=("Select a context:")
     fi
