@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# gw - a git worktree wrapper
+
+#set -eu
+#[ "${DEBUG:-0}" = "1" ] && set -x
+
+#curdir="$(pwd)"
+#prefix="$(git rev-parse --show-prefix)"
+#gitroot="$(git rev-parse --show-toplevel)"
+#branchname="$(git rev-parse --abbrev-ref HEAD)"
+
+declare -a worktree_list gw_commands
+
+DIAG_OK=0 DIAG_CANCEL=1 DIAG_HELP=2 DIAG_EXTRA=3 DIAG_ERROR=-1
+gw_commands=(switch add)
+
+_die () { _debug "$*" ; exit 1 ; }
+_debug () { printf "%s: Debug: %s\n" "$0" "$*" 1>&2 ; }
+
+_get_worktree_list () {
+    local data
+    data="$(git worktree list | awk '{print $1,"=",$3}' | sed -E 's/ = \[(.*)\]$/\x1\1/')"
+    _map_entries worktree_list "$data"
+}
+
+_map_entries () {
+    local array="$1" data="$2" separator=$'\x1'
+    # shellcheck disable=SC2034
+    while IFS="$separator" read -r -a entry ; do
+        eval "$array"'+=("${entry[@]}")'
+    done <<<"$data"
+}
+
+_set_default_vars () {
+    GIT_CLONE_OPTS=(--depth 1 --recurse-submodules --shallow-submodules)
+    GW_DEFAULTBRANCH="${GW_DEFAULTBRANCH:-master}"
+    # shellcheck disable=SC2016,SC2088
+    [ -n "${GW_HIERARCHY:-}" ] || GW_HIERARCHY='~/git/${_repo_hostname}/${_repo_path}'
+    # shellcheck disable=SC2016,SC2088
+    [ -n "${GW_WORKTREE_HIERARCHY:-}" ] || GW_WORKTREE_HIERARCHY='${GW_HIERARCHY}/.git-gw'
+}
+
+# https://[username:password@]host/org/repo.git
+# git@host:org/repo.git
+_parse_git_remote_repo () {
+    local repo="$1"
+    if [[ "${repo%%:*}" =~ https? ]] ; then
+        _repo_protocol="${repo%%:*}"
+        _repo_hostname="${repo#*//}"
+        _repo_userpass="${_repo_hostname%@*}"
+        _repo_username="${_repo_userpass%:*}"
+        _repo_password="${_repo_userpass#*:}"
+        _repo_hostname="${_repo_hostname##*@}"
+        _repo_remotepath="${_repo_hostname#*/}"
+        _repo_hostname="${_repo_hostname%%/*}"
+        _debug "Parsed repo '$repo': protocol '$_repo_protocol' host '$_repo_hostname' username '$_repo_username' password '$_repo_password' host '$_repo_hostname' remotepath '$_repo_remotepath'"
+    elif [[ "${repo%%:*}" =~ [[:alnum:]_-]@[[:alnum:]-] ]] ; then
+        _repo_protocol="git"
+        _repo_username="${repo%%@*}"
+        _repo_hostname="${repo##*@}"
+        _repo_remotepath="${_repo_hostname##*:}"
+        _repo_hostname="${_repo_hostname%%:*}"
+        _debug "Parsed repo '$repo': protocol '$_repo_protocol' host '$_repo_hostname' username '$_repo_username' host '$_repo_hostname' remotepath '$_repo_remotepath'"
+    fi
+}
+
+_set_repo_vars () {
+    local repo="$1"
+    
+}
+
+_gw_clone () {
+    #local gitdir="$(
+    #GIT_CLONE_OPTS+=(--separate-git-dir)
+    git clone "${GIT_CLONE_OPTS[@]}" "$@"
+}
+
+_gw_switch () {
+    # shellcheck disable=SC2155
+    local prefix="$(git rev-parse --show-prefix)" prefixdir
+    local execlist worktree_list c tmpfile result ret current
+    local branchname="$(git rev-parse --abbrev-ref HEAD)"
+    execlist=(dialog --menu "Select a branch" 25 80 20 -1 "(DEFAULT)")
+    _get_worktree_list
+    c=0; while [ $c -lt ${#worktree_list[@]} ] ; do
+        current="${worktree_list[$((c+1))]}"
+        [ "$branchname" = "$current" ] && current="$current (CURRENT)"
+        execlist+=("$c" "$current")
+        c=$((c+2))
+    done
+    tmpfile="$(mktemp)"
+    "${execlist[@]}" 2>"$tmpfile"
+    ret=$?; if [ $ret -ne $DIAG_OK ] ; then _debug "Error: return status $ret" ; return 1; fi
+    result="$(cat "$tmpfile")"
+    rm -f "$tmpfile"
+    [ "$result" = "-1" ] && return
+    if [ -d "${worktree_list[$result]}" ] ; then
+        echo "+ cd '${worktree_list[$result]}'"
+        prefixdir="${old_worktree_prefix:-$prefix}"
+        if [ ! -d "${worktree_list[$result]}/$prefixdir" ] ; then
+            _debug "Could not find '$prefixdir' in worktree dir '${worktree_list[$result]}'; going to git root instead"
+            old_worktree_prefix="$prefixdir"
+            cd "${worktree_list[$result]}" || _debug "Could not cd to '${worktree_list[$result]}'"
+        else
+            unset old_worktree_prefix
+            cd "${worktree_list[$result]}/$prefixdir" || _debug "Could not cd to '${worktree_list[$result]}/$prefixdir'"
+        fi
+    else
+        _debug "No such directory '${worktree_list[$result]}'"
+    fi
+}
+
+_gw_add () {
+    local gitroot="$(git rev-parse --show-toplevel)"
+    local branchname="$(git rev-parse --abbrev-ref HEAD)"
+    local execlist result=() path ret
+    execlist=(dialog --form "Add a new worktree" 0 0 0 "Origin branch:" 1 1 "$branchname" 1 20 30 0 "New branch:" 2 1 "" 2 20 30 0)
+    tmpfile="$(mktemp)"
+    "${execlist[@]}" 2>"$tmpfile"
+    ret=$?; if [ $ret -ne $DIAG_OK ] ; then _debug "Error: return status $ret" ; return 1; fi
+    IFS=$'\n' read -r -d '' -a result <"$tmpfile"
+    rm -f "$tmpfile"
+    if [ -z "${result[0]}" ] ; then
+        _debug "No origin branch name" ; return 1
+    elif [ -z "${result[1]}" ] ; then
+        _debug "No new branch name" ; return 1
+    fi
+    path="$(dirname "$gitroot")/${result[1]}"
+    if git worktree add -b "${result[1]}" "$path" "${result[0]}" ; then
+        echo "+ cd '$path'"
+        cd "$path"
+    fi
+}
+
+_gw () {
+    local execlist=() options=() c=0 result ret
+    execlist=(dialog --menu "Select a command" 0 0 0 -1 "(NONE)")
+    for cmd in "${gw_commands[@]}" ; do
+        execlist+=("$c" "$cmd")
+        c=$((c+1))
+    done
+    tmpfile="$(mktemp)"
+    "${execlist[@]}" 2>"$tmpfile"
+    ret=$?; if [ $ret -ne $DIAG_OK ] ; then _debug "Error: return status $ret" ; return 1; fi
+    result="$(cat "$tmpfile")"
+    rm -f "$tmpfile"
+    [ "$result" = "-1" ] && return
+    _gw_runcmd "${gw_commands[$result]}"
+}
+
+_gw_runcmd () {
+    case "$1" in
+        -h|--help)  _gw_usage ;;
+        sw|switch)  _gw_switch ;;
+        a|add)      _gw_add ;;
+        *)          _debug "Invalid option: '$OPTARG'" ;;
+    esac
+}
+
+_gw_usage () {
+    cat <<EOUSAGE
+gw: Wrapper around 'git worktree'
+
+Usage: $0 [COMMAND]
+
+1. Keep a directory 'foo', and in that directory clone a Git repository, with the
+   name of your main branch (so, 'foo/main').
+2. Change to that directory and run '. gw' (if 'gw' is in your path, this will find
+   'gw' and load it into your shell, which will enable it to change the current
+   directory of your shell).
+3. You can then select a command to run and the wrapper will make it easier to use.
+
+Commands:
+
+    switch          Switch to a worktree directory. Looks up your worktree list,
+                    presents you with a list of branches, and when you select one,
+                    your current shell will change to the directory of that worktree.
+
+    add             Add a new worktree directory. Put in the name of the source branch
+                    and the name of a new branch, and a new worktree will be created
+                    with the new branch name (ex. 'foo/new-branch').
+
+EOUSAGE
+    return 1
+}
+
+#set -x
+#_parse_git_remote_repo "https://foo:bar@github.com/someorg/somerepo.git"
+#_parse_git_remote_repo "gituser@github.com:someorg/somerepo.git"
+
+if [ $# -lt 1 ] ; then
+    _gw
+else
+    _gw_runcmd "$@"
+fi
