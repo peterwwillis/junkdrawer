@@ -9,18 +9,28 @@
 #gitroot="$(git rev-parse --show-toplevel)"
 #branchname="$(git rev-parse --abbrev-ref HEAD)"
 
-declare -a worktree_list gw_commands
+declare -a worktree_list gw_commandlist
 
-DIAG_OK=0 DIAG_CANCEL=1 DIAG_HELP=2 DIAG_EXTRA=3 DIAG_ERROR=-1
-gw_commands=(switch add)
+DIALOG_ERROR=-1 DIALOG_OK=0 DIALOG_CANCEL=1 DIALOG_HELP=2
+DIALOG_ITEM_HELP=2 DIALOG_EXTRA=3 DIALOG_TIMEOUT=5 DIALOG_ESC=255
 
-_die () { _debug "$*" ; exit 1 ; }
+gw_commandlist=(switch add convert list)
+
 _debug () { printf "%s: Debug: %s\n" "$0" "$*" 1>&2 ; }
+_errifnot () { if [ $1 -ne $2 ] ; then _debug "Error: return status $1" ; return 1 ; fi ; return 0 ; }
 
 _get_worktree_list () {
-    local data
-    data="$(git worktree list | awk '{print $1,"=",$3}' | sed -E 's/ = \[(.*)\]$/\x1\1/')"
-    _map_entries worktree_list "$data"
+    local wt='' branch=''
+    while read -r -a entry ; do
+        if [ "${entry[0]}" = "worktree" ] ; then
+            wt="${entry[1]}"
+        elif [ "${entry[0]}" = "branch" ] ; then
+            branch="${entry[1]##refs/heads/}"
+        elif [ -z "${entry[0]}" ] ; then
+            worktree_list+=("$wt" "$branch")
+            wt='' branch=''
+        fi
+    done < <(git worktree list --porcelain)
 }
 
 _map_entries () {
@@ -78,19 +88,24 @@ _gw_clone () {
 _gw_switch () {
     # shellcheck disable=SC2155
     local prefix="$(git rev-parse --show-prefix)" prefixdir
-    local execlist worktree_list c tmpfile result ret current
+    local execlist worktree_list c tmpfile result ret current prompttxt
     local branchname="$(git rev-parse --abbrev-ref HEAD)"
-    execlist=(dialog --menu "Select a branch" 0 0 0 -1 "(DEFAULT)")
+    prompttxt="$(printf "%s\n" "Select a worktree branch to change current directory to." "" "Current branch is indicated with an asterisk.")"
+    execlist=(dialog --title "Worktree switch" --menu "$prompttxt" 0 0 0 -1 "(DEFAULT)")
     _get_worktree_list
     c=0; while [ $c -lt ${#worktree_list[@]} ] ; do
         current="${worktree_list[$((c+1))]}"
-        [ "$branchname" = "$current" ] && current="$current (CURRENT)"
+        if [ "$branchname" = "$current" ] ; then
+            current="* $current"
+        else
+            current="  $current"
+        fi
         execlist+=("$c" "$current")
         c=$((c+2))
     done
     tmpfile="$(mktemp)"
     "${execlist[@]}" 2>"$tmpfile"
-    ret=$?; if [ $ret -ne $DIAG_OK ] ; then _debug "Error: return status $ret" ; return 1; fi
+    _errifnot $? $DIALOG_OK || return 1
     result="$(cat "$tmpfile")"
     rm -f "$tmpfile"
     [ "$result" = "-1" ] && return
@@ -125,7 +140,7 @@ _gw_add () {
             "New branch" 3 1 "" 3 25 30 0)
     tmpfile="$(mktemp)"
     "${execlist[@]}" 2>"$tmpfile"
-    ret=$?; if [ $ret -ne $DIAG_OK ] ; then _debug "Error: return status $ret" ; return 1; fi
+    _errifnot $? $DIALOG_OK || return 1
     IFS=$'\n' read -r -d '' -a result <"$tmpfile"
     rm -f "$tmpfile"
     if [ -z "${result[1]}" ] ; then
@@ -137,32 +152,68 @@ _gw_add () {
             _debug "No new branch name" ; return 1
         fi
         path="$(dirname "$gitroot")/${result[2]}"
-        args+=("-b" "${result[2]}" "$path" "${result[0]}")
+        args+=("-b" "${result[2]}" "$path" "${result[1]}")
     else
         path="$(dirname "$gitroot")/${result[1]}"
         args+=("$path" "${result[1]}")
     fi
-    echo "+ ${args[@]}"
+    echo "+ ${args[*]}"
     if "${args[@]}" ; then
         echo "+ cd '$path'"
         cd "$path"
     fi
 }
 
+_gw_convert () {
+    local execlist=() gitroot branchname newdir prompttxt
+    gitroot="$(git rev-parse --show-toplevel)"
+    branchname="$(git rev-parse --abbrev-ref HEAD)"
+    if [ -e "$(dirname "$gitroot")/.gwrc" ] ; then
+        _debug "Parent is already a gw directory! Should be no need to convert"
+        return 1
+    fi
+    prompttxt="$( printf "%s\n" \
+        "Repository: $gitroot" \
+        "Remote:" "$(git remote -v)" \
+        "" \
+        "New work directory will be '$gitroot/$branchname'." \
+        "" \
+        "Continue?" )"
+    execlist=(dialog --title "Convert this repository to a worktree subdirectory" --yesno "$prompttxt" 0 0)
+    "${execlist[@]}"
+    _errifnot $? $DIALOG_OK || return 1
+    newdir="$(mktemp -d)"
+    if cp -a -v ./.??* ./* "$newdir/" ; then
+        rm -rfv ./.??* ./*
+        if mv -v "$newdir" "$branchname" ; then
+            echo "ORIGIN_WORKDIR=\"$gitroot/$branchname\"" > .gwrc
+            cd "$branchname"
+        fi
+    else
+        _debug "Error while copying repo files to '$newdir/'"
+    fi
+}
+
+_gw_list () {
+    dialog --title "Worktree list" --msgbox "$(git worktree list -v)" -1 -1
+}
+
 _gw () {
-    local execlist=() options=() c=0 result ret
-    execlist=(dialog --menu "Select a command" 0 0 0 -1 "(NONE)")
-    for cmd in "${gw_commands[@]}" ; do
+    local execlist=() options=() c=0 result ret prompttxt gitroot
+    gitroot="$(git rev-parse --show-toplevel)"
+    prompttxt="$(printf "%s\n" "Repository: $gitroot" "" "Select a wrapper command")"
+    execlist=(dialog --title "Git Worktree wrapper" --menu "$prompttxt" 0 0 0 -1 "(NONE)")
+    for cmd in "${gw_commandlist[@]}" ; do
         execlist+=("$c" "$cmd")
         c=$((c+1))
     done
     tmpfile="$(mktemp)"
     "${execlist[@]}" 2>"$tmpfile"
-    ret=$?; if [ $ret -ne $DIAG_OK ] ; then _debug "Error: return status $ret" ; return 1; fi
+    _errifnot $? $DIALOG_OK || return 1
     result="$(cat "$tmpfile")"
     rm -f "$tmpfile"
     [ "$result" = "-1" ] && return
-    _gw_runcmd "${gw_commands[$result]}"
+    _gw_runcmd "${gw_commandlist[$result]}"
 }
 
 _gw_runcmd () {
@@ -170,7 +221,9 @@ _gw_runcmd () {
         -h|--help)  _gw_usage ;;
         sw|switch)  _gw_switch ;;
         a|add)      _gw_add ;;
-        *)          _debug "Invalid option: '$OPTARG'" ;;
+        convert)    _gw_convert ;;
+        list)       _gw_list ;;
+        *)          _debug "Invalid command: '$1'" ;;
     esac
 }
 
@@ -197,6 +250,15 @@ Commands:
                     and the name of a new branch, and a new worktree will be created
                     with the new branch name (ex. 'foo/new-branch').
 
+    convert         Convert a git repository into a worktree-compatible form. Basically
+                    it just makes a new temp directory, copies all the files in the current
+                    directory there, removes all the files in the current directory, and
+                    then moves the temp directory into the current one with the name of the
+                    branch that was previously checked out. From here you can run workdir
+                    commands and they will create directories in a parent directory
+                    (using the name of the branch you want a worktree for).
+
+    list            List the current worktrees.
 EOUSAGE
     return 1
 }
@@ -204,6 +266,15 @@ EOUSAGE
 #set -x
 #_parse_git_remote_repo "https://foo:bar@github.com/someorg/somerepo.git"
 #_parse_git_remote_repo "gituser@github.com:someorg/somerepo.git"
+
+if [ -r .gwrc ] ; then
+    origin_workdir="$(env -i sh -c 'set -a; . ./.gwrc ; echo $ORIGIN_WORKDIR')"
+    _debug "Found .gwrc; moving to origin worktree '$origin_workdir'"
+    sleep 3
+    cd "$origin_workdir"
+fi
+
+if ! git rev-parse 2>/dev/null ; then _debug "Current directory is not a Git work tree" ; return 1 ; fi
 
 if [ $# -lt 1 ] ; then
     _gw
