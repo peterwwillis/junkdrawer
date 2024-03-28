@@ -14,7 +14,7 @@ declare -a worktree_list gw_commandlist
 DIALOG_ERROR=-1 DIALOG_OK=0 DIALOG_CANCEL=1 DIALOG_HELP=2
 DIALOG_ITEM_HELP=2 DIALOG_EXTRA=3 DIALOG_TIMEOUT=5 DIALOG_ESC=255
 
-gw_commandlist=(switch add convert list)
+gw_commandlist=(switch add convert remove list)
 
 _debug () { printf "%s: Debug: %s\n" "$0" "$*" 1>&2 ; }
 _errifnot () { if [ $1 -ne $2 ] ; then _debug "Error: return status $1" ; return 1 ; fi ; return 0 ; }
@@ -194,6 +194,34 @@ _gw_convert () {
     fi
 }
 
+_gw_remove () {
+    local execlist=() gitroot branchname prompttxt 
+    local c newworkdir curworkdir
+    gitroot="$(git rev-parse --show-toplevel)"
+    branchname="$(git rev-parse --abbrev-ref HEAD)"
+    prompttxt="$( printf "%s\n" \
+        "Repository: $gitroot" \
+        "Remote:" "$(git remote -v)" \
+        "" \
+        "Remove worktree '$branchname' ?" )"
+    _get_worktree_list
+    newworkdir=''
+    c=0; while [ $c -lt ${#worktree_list[@]} ] ; do
+        current="${worktree_list[$((c+1))]}"
+        if [ "$branchname" = "$current" ] ; then
+            curworkdir="${worktree_list[$c]}"
+        elif [ ! "$branchname" = "$current" ] && [ -z "${newworkdir:-}" ] ; then
+            newworkdir="${worktree_list[$c]}"
+        fi
+        c=$((c+2))
+    done
+    execlist=(dialog --title "Remove worktree" --yesno "$prompttxt" 0 0)
+    "${execlist[@]}"
+    _errifnot $? $DIALOG_OK || return 1
+    cd "$newworkdir"
+    git worktree remove "$curworkdir"
+}
+
 _gw_list () {
     dialog --title "Worktree list" --msgbox "$(git worktree list -v)" -1 -1
 }
@@ -222,6 +250,7 @@ _gw_runcmd () {
         sw|switch)  _gw_switch ;;
         a|add)      _gw_add ;;
         convert)    _gw_convert ;;
+        remove)     _gw_remove ;;
         list)       _gw_list ;;
         *)          _debug "Invalid command: '$1'" ;;
     esac
@@ -270,7 +299,6 @@ EOUSAGE
 if [ -r .gwrc ] ; then
     origin_workdir="$(env -i sh -c 'set -a; . ./.gwrc ; echo $ORIGIN_WORKDIR')"
     _debug "Found .gwrc; moving to origin worktree '$origin_workdir'"
-    sleep 3
     cd "$origin_workdir"
 fi
 
