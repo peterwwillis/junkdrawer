@@ -17,6 +17,8 @@ _do_script () {
     done <"$script"
     [ ${#description[@]} -gt 0 ] || return 0
     scripts+=("$script")
+    slug="${script//\./}"
+    tableofcontents+=("$slug" "${description[0]}")
     content+=( "$(printf "%s\n" "## [${description[0]}](./$script)" "<blockquote>" "${description[@]:1}" "</blockquote>" )" $'\n' )
 }
 
@@ -33,14 +35,16 @@ _main () {
     done
 
     printf "%s\n" "Table of Contents"
-    for i in "${scripts[@]}" ; do
-        printf "%s\n" " * [$i](#$i)"
-    done
+
+    while read -r slug ; do
+        printf "%s\n" " * [${tableofcontents[$slug]}](#$slug)"
+    done <<<"$(printf "%s\n" "${!tableofcontents[@]}" | sort)"
+
     printf "%s\n\n\n" "---"
 
     printf "%s\n" "${content[@]}"
 }
 
 declare -a content=()
-declare -a scripts=()
+declare -A tableofcontents=()
 _main "$@"
