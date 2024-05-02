@@ -29,7 +29,7 @@ _do_script () {
         desc_nameless=""
         desc_name_only="$sanitized_desc"
     fi
-    tableofcontents+=("$slug" "$sanitized_desc")
+    tableofcontents+=("$slug" "$script")
     content+=( "$(printf "%s\n" "## [$desc_name_only](./$script)$desc_nameless" "<blockquote>" "${description[@]:1}" "</blockquote>" )" $'\n' )
 }
 
