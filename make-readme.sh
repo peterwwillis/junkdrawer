@@ -17,7 +17,11 @@ _do_script () {
     done <"$script"
     [ ${#description[@]} -gt 0 ] || return 0
     scripts+=("$script")
-    slug="${script//\./}"
+    slug="${description[0]//\./}"
+    slug=${slug//\.}
+    slug=${slug,,[A-Z]}
+    slug=${slug// /-}
+    slug=${slug//,}
     tableofcontents+=("$slug" "${description[0]}")
     content+=( "$(printf "%s\n" "## [${description[0]}](./$script)" "<blockquote>" "${description[@]:1}" "</blockquote>" )" $'\n' )
 }
