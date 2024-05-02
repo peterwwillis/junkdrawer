@@ -21,8 +21,9 @@ _do_script () {
     slug=${slug//\.}
     slug=${slug,,[A-Z]}
     slug=${slug// /-}
-    slug=${slug//,}
-    tableofcontents+=("$slug" "${description[0]}")
+    slug=${slug//[^a-zA-Z0-9-]}
+    sanitized_desc="${description[0]//:/-}"
+    tableofcontents+=("$slug" "$sanitized_desc")
     content+=( "$(printf "%s\n" "## [${description[0]}](./$script)" "<blockquote>" "${description[@]:1}" "</blockquote>" )" $'\n' )
 }
 
