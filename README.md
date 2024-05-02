@@ -1,0 +1,984 @@
+Table of Contents
+ * [ad-ldap-tool.sh](#ad-ldap-tool.sh)
+ * [apt-update-security-packages.sh](#apt-update-security-packages.sh)
+ * [aws-adfs-profile-login](#aws-adfs-profile-login)
+ * [aws-assume-admin-role](#aws-assume-admin-role)
+ * [aws-assume-role](#aws-assume-role)
+ * [aws-cli-cache-auth-keys.sh](#aws-cli-cache-auth-keys.sh)
+ * [aws-create-update-secret](#aws-create-update-secret)
+ * [aws-ec2-describe-sec-group-rules.sh](#aws-ec2-describe-sec-group-rules.sh)
+ * [aws-ec2-get-instance-id.sh](#aws-ec2-get-instance-id.sh)
+ * [aws-ec2-get-ip.sh](#aws-ec2-get-ip.sh)
+ * [aws-ec2-get-network-interface-public-ips.sh](#aws-ec2-get-network-interface-public-ips.sh)
+ * [aws-ec2-get-running-instances.sh](#aws-ec2-get-running-instances.sh)
+ * [aws-ec2-get-security-groups.sh](#aws-ec2-get-security-groups.sh)
+ * [aws-ec2-get-sg-ids.sh](#aws-ec2-get-sg-ids.sh)
+ * [aws-ecr-create-repository](#aws-ecr-create-repository)
+ * [aws-ecr-docker-login](#aws-ecr-docker-login)
+ * [aws-ecr-docker-pull](#aws-ecr-docker-pull)
+ * [aws-ecr-docker-push](#aws-ecr-docker-push)
+ * [aws-ecs-utils.sh](#aws-ecs-utils.sh)
+ * [aws-rds-get-ip.sh](#aws-rds-get-ip.sh)
+ * [aws-s3-get-buckets.sh](#aws-s3-get-buckets.sh)
+ * [aws-select-credentials](#aws-select-credentials)
+ * [aws-select-profile](#aws-select-profile)
+ * [bitbucket-list-all-repos.py](#bitbucket-list-all-repos.py)
+ * [bitbucket-list-all-repos.sh](#bitbucket-list-all-repos.sh)
+ * [bitbucket-list-repo-commits.py](#bitbucket-list-repo-commits.py)
+ * [bitbucket-manage.py](#bitbucket-manage.py)
+ * [bluetooth-reset.sh](#bluetooth-reset.sh)
+ * [bluez-set-a2dp.sh](#bluez-set-a2dp.sh)
+ * [butler-jenkins-export-import.sh](#butler-jenkins-export-import.sh)
+ * [cgrep](#cgrep)
+ * [circleci-manage.py](#circleci-manage.py)
+ * [cpufreq-set-all](#cpufreq-set-all)
+ * [csv_row_template_output.py](#csv_row_template_output.py)
+ * [d-aws](#d-aws)
+ * [d-java](#d-java)
+ * [d-nr-cli](#d-nr-cli)
+ * [d-terraform](#d-terraform)
+ * [date-seconds-portable.sh](#date-seconds-portable.sh)
+ * [docker-delete-registry-image.py](#docker-delete-registry-image.py)
+ * [docker-detach-sshd.sh](#docker-detach-sshd.sh)
+ * [docker-login-list-registries](#docker-login-list-registries)
+ * [docker-registry-list-repositories](#docker-registry-list-repositories)
+ * [docker-run-1password](#docker-run-1password)
+ * [docker-run-gcloud](#docker-run-gcloud)
+ * [docker-run-op](#docker-run-op)
+ * [docker-sshd-entrypoint.sh](#docker-sshd-entrypoint.sh)
+ * [download-aws-secret-env.sh](#download-aws-secret-env.sh)
+ * [download-tls-cert.sh](#download-tls-cert.sh)
+ * [envsubst.sh](#envsubst.sh)
+ * [flatpak-run-slack](#flatpak-run-slack)
+ * [flatpak-run-thunderbird](#flatpak-run-thunderbird)
+ * [flatpak-run-zoom](#flatpak-run-zoom)
+ * [gcp-list-service-account-keys.sh](#gcp-list-service-account-keys.sh)
+ * [git-askpass-netrc.sh](#git-askpass-netrc.sh)
+ * [git-clean-workdir.sh](#git-clean-workdir.sh)
+ * [git-clean.sh](#git-clean.sh)
+ * [git-cleanup-local-stale.sh](#git-cleanup-local-stale.sh)
+ * [git-commit-file.sh](#git-commit-file.sh)
+ * [git-find-ignored.sh](#git-find-ignored.sh)
+ * [git-fix-commit-author.sh](#git-fix-commit-author.sh)
+ * [git-grep-entire-repo-history.sh](#git-grep-entire-repo-history.sh)
+ * [git-http-check-origin-exists.sh](#git-http-check-origin-exists.sh)
+ * [git-lfs-compare.sh](#git-lfs-compare.sh)
+ * [git-list-branch-by-date.sh](#git-list-branch-by-date.sh)
+ * [git-list-repo-files.sh](#git-list-repo-files.sh)
+ * [git-list-untracked-ignored.sh](#git-list-untracked-ignored.sh)
+ * [git-list-untracked.sh](#git-list-untracked.sh)
+ * [git-permanently-remove-file-from-repo.sh](#git-permanently-remove-file-from-repo.sh)
+ * [git-push-force-all.sh](#git-push-force-all.sh)
+ * [git-show-commit-authors.sh](#git-show-commit-authors.sh)
+ * [git-show-mainline-branch.sh](#git-show-mainline-branch.sh)
+ * [git-squash-current-branch.sh](#git-squash-current-branch.sh)
+ * [github-get-pr](#github-get-pr)
+ * [github-get-restapi.sh](#github-get-restapi.sh)
+ * [github-get-team-members.sh](#github-get-team-members.sh)
+ * [github-get-team.sh](#github-get-team.sh)
+ * [github-list-users.py](#github-list-users.py)
+ * [github-set-commit-build-status.sh](#github-set-commit-build-status.sh)
+ * [gw](#gw)
+ * [helm-list-fast.sh](#helm-list-fast.sh)
+ * [jenkins-add-credential.sh](#jenkins-add-credential.sh)
+ * [jenkins-curl-wrapper.sh](#jenkins-curl-wrapper.sh)
+ * [jenkins-generate-user-token.sh](#jenkins-generate-user-token.sh)
+ * [jenkins-groovy-remote.sh](#jenkins-groovy-remote.sh)
+ * [jenkins-run-groovy-remote.sh](#jenkins-run-groovy-remote.sh)
+ * [jenkins-run-job-with-parameter-defaults.py](#jenkins-run-job-with-parameter-defaults.py)
+ * [jenkins-trigger-paramaterized-build.py](#jenkins-trigger-paramaterized-build.py)
+ * [jenkinsctl](#jenkinsctl)
+ * [k8s-copy-secret-across-namespace.sh](#k8s-copy-secret-across-namespace.sh)
+ * [k8s-curl.sh](#k8s-curl.sh)
+ * [k8s-deployment-restart.sh](#k8s-deployment-restart.sh)
+ * [k8s-diagnose-site.sh](#k8s-diagnose-site.sh)
+ * [k8s-diff-secret-by-ns.sh](#k8s-diff-secret-by-ns.sh)
+ * [k8s-diff-secret.sh](#k8s-diff-secret.sh)
+ * [k8s-find-all-resources.sh](#k8s-find-all-resources.sh)
+ * [k8s-get-events-notnormal.sh](#k8s-get-events-notnormal.sh)
+ * [k8s-get-pod-logs.sh](#k8s-get-pod-logs.sh)
+ * [k8s-get-pods-running.sh](#k8s-get-pods-running.sh)
+ * [k8s-get-secret-values.sh](#k8s-get-secret-values.sh)
+ * [k8s-get-secrets-opaque.sh](#k8s-get-secrets-opaque.sh)
+ * [k8s-run-shell.sh](#k8s-run-shell.sh)
+ * [k8s-show-error.sh](#k8s-show-error.sh)
+ * [kd](#kd)
+ * [load-vim-plugins.sh](#load-vim-plugins.sh)
+ * [make-readme.sh](#make-readme.sh)
+ * [move-files-to-folders-by-ext.sh](#move-files-to-folders-by-ext.sh)
+ * [notes.sh](#notes.sh)
+ * [python-stdin-to-json.py](#python-stdin-to-json.py)
+ * [random-dict-password.sh](#random-dict-password.sh)
+ * [random-password.sh](#random-password.sh)
+ * [remote-gpg](#remote-gpg)
+ * [reset-ntp.sh](#reset-ntp.sh)
+ * [ssh](#ssh)
+ * [ssh-config-hosts.sh](#ssh-config-hosts.sh)
+ * [ssh-mass-run-script.sh](#ssh-mass-run-script.sh)
+ * [terraform-find-missing-vars.pl](#terraform-find-missing-vars.pl)
+ * [ubuntu-18.04-setup-dnsmasq.sh](#ubuntu-18.04-setup-dnsmasq.sh)
+ * [ubuntu-list-pkgs-by-date.sh](#ubuntu-list-pkgs-by-date.sh)
+ * [uniqunsort](#uniqunsort)
+ * [urlencode.sh](#urlencode.sh)
+ * [virtualenv](#virtualenv)
+ * [wget-mirror.sh](#wget-mirror.sh)
+ * [wordpress-salt-envs.sh](#wordpress-salt-envs.sh)
+ * [xml-lint](#xml-lint)
+---
+
+
+## [ad-ldap-tool.sh](./ad-ldap-tool.sh)
+<blockquote>
+ad-ldap-tool.sh - Search Microsoft Active Directory using ldapsearch
+</blockquote>
+
+
+## [apt-update-security-packages.sh](./apt-update-security-packages.sh)
+<blockquote>
+apt-update-security-packages.sh - Update Apt packages for security updates
+</blockquote>
+
+
+## [aws-adfs-profile-login](./aws-adfs-profile-login)
+<blockquote>
+aws-adfs-profile-login - Login to AWS with aws-adfs, using AWS profiles
+</blockquote>
+
+
+## [aws-assume-admin-role](./aws-assume-admin-role)
+<blockquote>
+aws-assume-admin-role - Assume an admin role and execute arbitrary commands
+</blockquote>
+
+
+## [aws-assume-role](./aws-assume-role)
+<blockquote>
+aws-assume-role - A wrapper to make it easier to assume AWS roles
+
+The following is specifically written to return an exit code,
+_without exiting the current shell session_.
+This way this will work when sourced into a script, without
+exiting the parent script.
+</blockquote>
+
+
+## [aws-cli-cache-auth-keys.sh](./aws-cli-cache-auth-keys.sh)
+<blockquote>
+aws-cli-cache-auth-keys.sh - Extract the auth keys from a cached AWS CLI authentication json file
+</blockquote>
+
+
+## [aws-create-update-secret](./aws-create-update-secret)
+<blockquote>
+aws-create-update-secret - Create or update an AWS Secrets Manager secret
+
+This script is only used the first time we create a secret.
+It's part of a bootstrap process, or when a new application is added.
+</blockquote>
+
+
+## [aws-ec2-describe-sec-group-rules.sh](./aws-ec2-describe-sec-group-rules.sh)
+<blockquote>
+aws-ec2-describe-sec-group-rules.sh - Print a TSV of AWS EC2 security group rules
+</blockquote>
+
+
+## [aws-ec2-get-instance-id.sh](./aws-ec2-get-instance-id.sh)
+<blockquote>
+aws-ec2-get-instance-id.sh - Get the Instance ID of running AWS EC2 instances
+</blockquote>
+
+
+## [aws-ec2-get-ip.sh](./aws-ec2-get-ip.sh)
+<blockquote>
+aws-ec2-get-ip.sh - Get the IPs of running AWS EC2 instances
+</blockquote>
+
+
+## [aws-ec2-get-network-interface-public-ips.sh](./aws-ec2-get-network-interface-public-ips.sh)
+<blockquote>
+aws-ec2-get-network-interface-public-ips.sh - Get the public IP of AWS EC2 network interfaces
+</blockquote>
+
+
+## [aws-ec2-get-running-instances.sh](./aws-ec2-get-running-instances.sh)
+<blockquote>
+aws-ec2-get-running-instances.sh - Get the Instance ID, key name, group ID, and public IP of running AWS EC2 instances
+</blockquote>
+
+
+## [aws-ec2-get-security-groups.sh](./aws-ec2-get-security-groups.sh)
+<blockquote>
+aws-ec2-get-security-groups.sh - Get AWS EC2 security groups
+</blockquote>
+
+
+## [aws-ec2-get-sg-ids.sh](./aws-ec2-get-sg-ids.sh)
+<blockquote>
+aws-ec2-get-sg-ids.sh - Get AWS EC2 instance security group IDs
+</blockquote>
+
+
+## [aws-ecr-create-repository](./aws-ecr-create-repository)
+<blockquote>
+aws-ecr-create-repository - Create an AWS ECR repository
+</blockquote>
+
+
+## [aws-ecr-docker-login](./aws-ecr-docker-login)
+<blockquote>
+aws-ecr-docker-login - Perform a Docker login to an AWS ECR repository
+</blockquote>
+
+
+## [aws-ecr-docker-pull](./aws-ecr-docker-pull)
+<blockquote>
+aws-ecr-docker-pull - Pull a Docker image from an AWS ECR registry
+</blockquote>
+
+
+## [aws-ecr-docker-push](./aws-ecr-docker-push)
+<blockquote>
+aws-ecr-docker-push - Push a Docker container to an AWS ECR registry
+</blockquote>
+
+
+## [aws-ecs-utils.sh](./aws-ecs-utils.sh)
+<blockquote>
+aws-ecs-utils.sh - Wrapper for simpler operations on AWS ECS
+</blockquote>
+
+
+## [aws-rds-get-ip.sh](./aws-rds-get-ip.sh)
+<blockquote>
+aws-rds-get-ip.sh - Get AWS RDS IP addresses for running instances
+</blockquote>
+
+
+## [aws-s3-get-buckets.sh](./aws-s3-get-buckets.sh)
+<blockquote>
+aws-s3-get-buckets.sh - Get AWS S3 bucket names
+</blockquote>
+
+
+## [aws-select-credentials](./aws-select-credentials)
+<blockquote>
+aws-select-credentials - Use 'dialog' to select cached AWS credentials and export it into your current shell
+
+Assuming this script is in your PATH, simply run:
+  $ `aws-select-credentials`
+or:
+  $ . aws-select-credentials
+</blockquote>
+
+
+## [aws-select-profile](./aws-select-profile)
+<blockquote>
+aws-select-profile - Use 'dialog' to select an AWS profile and export it into your current shell.
+
+Assuming this script is in your PATH, simply run:
+  $ `aws-select-profile`
+or:
+  $ . aws-select-profile
+</blockquote>
+
+
+## [bitbucket-list-all-repos.py](./bitbucket-list-all-repos.py)
+<blockquote>
+bitbucket-list-all-repos.py - Return a CSV file of Bitbucket repositories
+</blockquote>
+
+
+## [bitbucket-list-all-repos.sh](./bitbucket-list-all-repos.sh)
+<blockquote>
+bitbucket-list-all-repos.sh - Return a JSON document of available Bitbucket repositories for a specific \$BITBUCKET_TEAM
+</blockquote>
+
+
+## [bitbucket-list-repo-commits.py](./bitbucket-list-repo-commits.py)
+<blockquote>
+bitbucket-list-repo-commits.py - Return a CSV of Bitbucket repositories
+</blockquote>
+
+
+## [bitbucket-manage.py](./bitbucket-manage.py)
+<blockquote>
+bitbucket-manage.py - A management CLI tool for Bitbucket repositories
+</blockquote>
+
+
+## [bluetooth-reset.sh](./bluetooth-reset.sh)
+<blockquote>
+bluetooth-reset.sh - Linux bluetooth needs a kick in the pants every time I connect my headset :(
+</blockquote>
+
+
+## [bluez-set-a2dp.sh](./bluez-set-a2dp.sh)
+<blockquote>
+bluez-set-a2dp.sh - Try to force-enable A2DP mode for Bluetooth devices
+</blockquote>
+
+
+## [butler-jenkins-export-import.sh](./butler-jenkins-export-import.sh)
+<blockquote>
+butler-jenkins-export-import.sh - Use Butlet to export and import jobs and credentials for Jenkins servers
+</blockquote>
+
+
+## [cgrep](./cgrep)
+<blockquote>
+cgrep - Wrapper for grep with color mode forced-on
+</blockquote>
+
+
+## [circleci-manage.py](./circleci-manage.py)
+<blockquote>
+circleci-manage.py - A management CLI for CircleCI operations the official CLI doesn't support
+</blockquote>
+
+
+## [cpufreq-set-all](./cpufreq-set-all)
+<blockquote>
+cpufreq-set-all - Set CPU frequency
+</blockquote>
+
+
+## [csv_row_template_output.py](./csv_row_template_output.py)
+<blockquote>
+csv_row_template_output.py - Generate a set of files based on a Python template and CSV file
+</blockquote>
+
+
+## [d-aws](./d-aws)
+<blockquote>
+d-aws - Run AWS CLI from Docker
+</blockquote>
+
+
+## [d-java](./d-java)
+<blockquote>
+d-java - Run Java from Docker
+</blockquote>
+
+
+## [d-nr-cli](./d-nr-cli)
+<blockquote>
+d-nr-cli - Run the NewRelic CLI from Docker
+</blockquote>
+
+
+## [d-terraform](./d-terraform)
+<blockquote>
+d-terraform - Run Terraform CLI from Docker
+</blockquote>
+
+
+## [date-seconds-portable.sh](./date-seconds-portable.sh)
+<blockquote>
+date-seconds-portable.sh - A portable implementation of 'date' output, given SECONDS
+</blockquote>
+
+
+## [docker-delete-registry-image.py](./docker-delete-registry-image.py)
+<blockquote>
+NOTE: I don't know who wrote this?? It was probably downloaded from the internet?
+- Peter
+</blockquote>
+
+
+## [docker-detach-sshd.sh](./docker-detach-sshd.sh)
+<blockquote>
+docker-detach-sshd.sh - Run a detached Docker container with an entrypoint to run an sshd daemon
+
+Before running this script, create an ssh key on the local host:
+      ssh-keygen -t ed25519 -N ''
+
+Set PUBKEY to the public key file created.
+Then run the sshd container below.
+
+This will volume-map the host's docker.sock,
+make a persistent Terraform plugin cache,
+a persistent volume for miscellaneous uses,
+the SSH public key created above (so we can login with it),
+maps in the entrypoint to set up and start sshd,
+and exports the sshd port to the local host.
+</blockquote>
+
+
+## [docker-login-list-registries](./docker-login-list-registries)
+<blockquote>
+docker-login-list-registries - List Docker CLI config's registries
+</blockquote>
+
+
+## [docker-registry-list-repositories](./docker-registry-list-repositories)
+<blockquote>
+docker-registry-list-repositories - List Docker CLI config's repositories
+</blockquote>
+
+
+## [docker-run-1password](./docker-run-1password)
+<blockquote>
+docker-run-1password - Run 1Password CLI using Docker
+</blockquote>
+
+
+## [docker-run-gcloud](./docker-run-gcloud)
+<blockquote>
+docker-run-gcloud - Run GCloud CLI from Docker
+</blockquote>
+
+
+## [docker-run-op](./docker-run-op)
+<blockquote>
+docker-run-op - Run 1Password's 'op' CLI tool with Docker
+</blockquote>
+
+
+## [docker-sshd-entrypoint.sh](./docker-sshd-entrypoint.sh)
+<blockquote>
+docker-sshd-entrypoint.sh - Install and run sshd in a Docker container
+</blockquote>
+
+
+## [download-aws-secret-env.sh](./download-aws-secret-env.sh)
+<blockquote>
+download-aws-secret-env.sh v0.2 - Download AWS Secrets Manager secrets, store in a file, and execute a program
+</blockquote>
+
+
+## [download-tls-cert.sh](./download-tls-cert.sh)
+<blockquote>
+download-tls-cert.sh - Download TLS certificate from a host/port
+</blockquote>
+
+
+## [envsubst.sh](./envsubst.sh)
+<blockquote>
+envsubst.sh - POSIX-compatible version of envsubst
+
+Feed it text on standard input, and it prints the text to standard output,
+replacing ${FOO} or $FOO in the text with the value of the variable.
+
+This is *very* slow, but it's about as fast as I can get it using just
+POSIX shell stuff (sed/awk would be faster). Use GNU envsubst for speed.
+
+Since this is a shell script, it conflates shell variables with
+environment variables. You can load this script into your shell
+and it will use those variables specific to your shell session:
+    cat Sample.txt | . ./envsubst.sh
+
+Or you can call this script as an external executable and it will
+use only exported variables:
+    cat Sample.txt | ./envsubst.sh
+
+</blockquote>
+
+
+## [flatpak-run-slack](./flatpak-run-slack)
+<blockquote>
+flatpak-run-slack - Run Slack using Flatpak
+</blockquote>
+
+
+## [flatpak-run-thunderbird](./flatpak-run-thunderbird)
+<blockquote>
+flatpak-run-thunderbird - Run Thunderbird using Flatpak
+</blockquote>
+
+
+## [flatpak-run-zoom](./flatpak-run-zoom)
+<blockquote>
+flatpak-run-zoom - Run Zoom using Flatpak
+</blockquote>
+
+
+## [gcp-list-service-account-keys.sh](./gcp-list-service-account-keys.sh)
+<blockquote>
+gcp-list-service-account-keys.sh - List GCP service account keys
+</blockquote>
+
+
+## [git-askpass-netrc.sh](./git-askpass-netrc.sh)
+<blockquote>
+git-askpass-netrc.sh - Use .netrc with Git Askpass
+
+This is mostly unnecessary right now. It was written with the idea that maybe
+one could use a fake username and then substitute it later with a new username
+and a specific personal access token.
+
+I think the solution is to turn this into a 'credential helper' which can
+take different arguments and actually return both a username and password.
+</blockquote>
+
+
+## [git-clean-workdir.sh](./git-clean-workdir.sh)
+<blockquote>
+git-clean-workdir.sh - Clean up temporary files in a Git working directory
+</blockquote>
+
+
+## [git-clean.sh](./git-clean.sh)
+<blockquote>
+git-clean.sh - Interactively remove unchecked-in Git working directory files
+</blockquote>
+
+
+## [git-cleanup-local-stale.sh](./git-cleanup-local-stale.sh)
+<blockquote>
+git-cleanup-local-stale.sh - Remove any stale local and remote Git branches from local repository
+</blockquote>
+
+
+## [git-commit-file.sh](./git-commit-file.sh)
+<blockquote>
+git-commit-file.sh - automation for committing files to git
+</blockquote>
+
+
+## [git-find-ignored.sh](./git-find-ignored.sh)
+<blockquote>
+git-find-ignored.sh - Show all the files in the current Git repo that are being ignored by .gitignore
+</blockquote>
+
+
+## [git-fix-commit-author.sh](./git-fix-commit-author.sh)
+<blockquote>
+git-fix-commit-author.sh - Rewrite Git history to correct the wrong commit author details
+</blockquote>
+
+
+## [git-grep-entire-repo-history.sh](./git-grep-entire-repo-history.sh)
+<blockquote>
+git-grep-entire-repo-history.sh - Grep the entire history of a Git repository
+</blockquote>
+
+
+## [git-http-check-origin-exists.sh](./git-http-check-origin-exists.sh)
+<blockquote>
+git-http-check-origin-exists.sh - In case you want to use 'curl' to see if an HTTP(s) Git repo actually exists or not
+</blockquote>
+
+
+## [git-lfs-compare.sh](./git-lfs-compare.sh)
+<blockquote>
+git-lfs-compare.sh - Compare the files in a Git repository with the files in Git LFS
+</blockquote>
+
+
+## [git-list-branch-by-date.sh](./git-list-branch-by-date.sh)
+<blockquote>
+git-list-branch-by-date.sh - List Git branches by date of last commit
+</blockquote>
+
+
+## [git-list-repo-files.sh](./git-list-repo-files.sh)
+<blockquote>
+git-list-repo-files.sh - List all files checked into a git repository
+</blockquote>
+
+
+## [git-list-untracked-ignored.sh](./git-list-untracked-ignored.sh)
+<blockquote>
+git-list-untracked-ignored.sh - List untracked and ignored files in a Git repository
+</blockquote>
+
+
+## [git-list-untracked.sh](./git-list-untracked.sh)
+<blockquote>
+git-list-untracked.sh - List untracked files in a Git repository
+</blockquote>
+
+
+## [git-permanently-remove-file-from-repo.sh](./git-permanently-remove-file-from-repo.sh)
+<blockquote>
+git-permanently-remove-file-from-repo.sh - Rewrite history to permanently remove a file from a Git repository
+</blockquote>
+
+
+## [git-push-force-all.sh](./git-push-force-all.sh)
+<blockquote>
+git-push-force-all.sh - Force-push a Git repository (with tags)
+</blockquote>
+
+
+## [git-show-commit-authors.sh](./git-show-commit-authors.sh)
+<blockquote>
+git-show-commit-authors.sh - List all of the commit authors in a Git repository
+</blockquote>
+
+
+## [git-show-mainline-branch.sh](./git-show-mainline-branch.sh)
+<blockquote>
+git-show-mainline-branch.sh - Attempt to show mainline branch of a Git repository
+</blockquote>
+
+
+## [git-squash-current-branch.sh](./git-squash-current-branch.sh)
+<blockquote>
+git-squash-current-branch.sh - Squash your current branch's commits, based on MAINBRANCH
+
+From https://stackoverflow.com/a/25357146/3760330
+</blockquote>
+
+
+## [github-get-pr](./github-get-pr)
+<blockquote>
+github-get-pr - Get a pull request branch from GitHub
+</blockquote>
+
+
+## [github-get-restapi.sh](./github-get-restapi.sh)
+<blockquote>
+github-get-restapi.sh - Curl the GitHub API
+</blockquote>
+
+
+## [github-get-team-members.sh](./github-get-team-members.sh)
+<blockquote>
+github-get-team-members.sh - Use get-github-restapi.sh to get GitHub team members list
+</blockquote>
+
+
+## [github-get-team.sh](./github-get-team.sh)
+<blockquote>
+github-get-team.sh - Use get-github-restapi.sh to get GitHub teams list
+</blockquote>
+
+
+## [github-list-users.py](./github-list-users.py)
+<blockquote>
+github-list-users.py - List GitHub users using 'github' Python library
+</blockquote>
+
+
+## [github-set-commit-build-status.sh](./github-set-commit-build-status.sh)
+<blockquote>
+github-set-commit-build-status.sh - Set commit build status for a GitHub commit
+</blockquote>
+
+
+## [gw](./gw)
+<blockquote>
+gw - A Terminal User Interface wrapper to make Git worktrees easier to manage
+</blockquote>
+
+
+## [helm-list-fast.sh](./helm-list-fast.sh)
+<blockquote>
+helm-list-fast.sh - a much faster version of 'helm list -A'
+
+About:
+  This script exists because 'helm list' will query the Kubernetes API server
+  in such a way that secrets take a looooong time to come back.
+  To avoid that wait, here I just grab the secrets list with kubectl, and then
+  parallelize grabbing individual last release files to determine their last
+  updated date.
+  This is about 6x faster than 'helm list' (on my cluster).
+
+Requires:
+  - kubectl, base64, gzip, jq, xargs, column
+
+TODO:
+ - add columns 'STATUS', 'CHART', 'APP VERSION'
+ - support single-namespace operation
+</blockquote>
+
+
+## [jenkins-add-credential.sh](./jenkins-add-credential.sh)
+<blockquote>
+jenkins-add-credential.sh - Adds a credential to Jenkins credential store via REST API
+
+Example:
+
+  $ JENKINS_SERVER_URL=https://foo.com/ \
+      ./add-jenkins-credential.sh easi-github-token <redacted>
+</blockquote>
+
+
+## [jenkins-curl-wrapper.sh](./jenkins-curl-wrapper.sh)
+<blockquote>
+jenkins-curl-wrapper.sh - Loads Jenkins authentication information and runs curl, passing in command-line arguments.
+
+Re-use this to call curl on Jenkins servers.
+By default gets and inserts a CSRF crumb in header.
+Pass in '-XGET' or '-XPOST' followed by the rest of your arguments, depending
+on the API calls you're making.
+
+et -Eeuo pipefail
+</blockquote>
+
+
+## [jenkins-generate-user-token.sh](./jenkins-generate-user-token.sh)
+<blockquote>
+jenkins-generate-user-token.sh - Generates a Jenkins user token
+</blockquote>
+
+
+## [jenkins-groovy-remote.sh](./jenkins-groovy-remote.sh)
+<blockquote>
+jenkins-groovy-remote.sh - Run a Groovy file on a Jenkins server (via the API)
+</blockquote>
+
+
+## [jenkins-run-groovy-remote.sh](./jenkins-run-groovy-remote.sh)
+<blockquote>
+jenkins-run-groovy-remote.sh - Takes a groovy file, replaces some variables, and executes it on a remote Jenkins instance.
+
+Sample groovy file:
+  print "ls -la".execute().getText()
+</blockquote>
+
+
+## [jenkins-run-job-with-parameter-defaults.py](./jenkins-run-job-with-parameter-defaults.py)
+<blockquote>
+jenkins-run-job-with-parameter-defaults.py - Run a Jenkins job with parameters
+</blockquote>
+
+
+## [jenkins-trigger-paramaterized-build.py](./jenkins-trigger-paramaterized-build.py)
+<blockquote>
+jenkins-trigger-paramaterized-build.py - Run a Jenkins parameterized build
+</blockquote>
+
+
+## [jenkinsctl](./jenkinsctl)
+<blockquote>
+jenkinsctl - a command-line wrapper around building and running a Jenkins instance
+</blockquote>
+
+
+## [k8s-copy-secret-across-namespace.sh](./k8s-copy-secret-across-namespace.sh)
+<blockquote>
+k8s-copy-secret-across-namespace.sh - Copy a Kubernetes secret into a new namespace
+</blockquote>
+
+
+## [k8s-curl.sh](./k8s-curl.sh)
+<blockquote>
+k8s-curl.sh - Curl the K8s API, from within a K8s pod
+</blockquote>
+
+
+## [k8s-deployment-restart.sh](./k8s-deployment-restart.sh)
+<blockquote>
+k8s-deployment-restart.sh - Restart a K8s deployment
+</blockquote>
+
+
+## [k8s-diagnose-site.sh](./k8s-diagnose-site.sh)
+<blockquote>
+k8s-diagnose-site.sh - Attempt to diagnose a web site in K8s
+</blockquote>
+
+
+## [k8s-diff-secret-by-ns.sh](./k8s-diff-secret-by-ns.sh)
+<blockquote>
+k8s-diff-secret-by-ns.sh - Diff k8s secrets between two namespaces
+</blockquote>
+
+
+## [k8s-diff-secret.sh](./k8s-diff-secret.sh)
+<blockquote>
+k8s-diff-secret.sh - Diff k8s secrets (this is broken)
+</blockquote>
+
+
+## [k8s-find-all-resources.sh](./k8s-find-all-resources.sh)
+<blockquote>
+k8s-find-all-resources.sh - Find all Kubernetes resources
+</blockquote>
+
+
+## [k8s-get-events-notnormal.sh](./k8s-get-events-notnormal.sh)
+<blockquote>
+k8s-get-events-notnormal.sh - Get all Kubernetes events not of type 'Normal'
+</blockquote>
+
+
+## [k8s-get-pod-logs.sh](./k8s-get-pod-logs.sh)
+<blockquote>
+k8s-get-pod-logs.sh - Save any Crashing, Error, or Failed pods' logs to a file
+</blockquote>
+
+
+## [k8s-get-pods-running.sh](./k8s-get-pods-running.sh)
+<blockquote>
+k8s-get-pods-running.sh - Get running K8s pods
+</blockquote>
+
+
+## [k8s-get-secret-values.sh](./k8s-get-secret-values.sh)
+<blockquote>
+k8s-get-secret-values.sh - Output kubernetes secret keys and values in plaintext
+</blockquote>
+
+
+## [k8s-get-secrets-opaque.sh](./k8s-get-secrets-opaque.sh)
+<blockquote>
+k8s-get-secrets-opaque.sh - Get any 'Opaque' type k8s secrets
+</blockquote>
+
+
+## [k8s-run-shell.sh](./k8s-run-shell.sh)
+<blockquote>
+k8s-run-shell.sh - Start a K8s pod and open an interactive shell, then destroy it on exit
+
+Installs some basic packages and drop user into command prompt in a screen session.
+On exit, pod is deleted.
+
+All arguments are passed to 'kubectl run' before the command arguments,
+so you can pass things like the k8s namespace.
+</blockquote>
+
+
+## [k8s-show-error.sh](./k8s-show-error.sh)
+<blockquote>
+k8s-show-error.sh - Show K8s errors for Certificate Manager
+</blockquote>
+
+
+## [kd](./kd)
+<blockquote>
+kd - A Terminal User Interface wrapper for Kubernetes commands
+
+kd is a wrapper around common kubernetes commands to simplify running various
+k8s tasks without needing to remember commands or rely on bash-completion.
+It supplies a text UI (optionally using the 'dialog' tool) for prompts.
+
+Run 'kd' and select a command, or select DEFAULT to always use the defaults.
+</blockquote>
+
+
+## [load-vim-plugins.sh](./load-vim-plugins.sh)
+<blockquote>
+load-vim-plugins.sh - Load VIM plugins
+</blockquote>
+
+
+## [make-readme.sh](./make-readme.sh)
+<blockquote>
+make-readme.sh - Generates a README.md based on the comment descriptions after a shebang in a script
+</blockquote>
+
+
+## [move-files-to-folders-by-ext.sh](./move-files-to-folders-by-ext.sh)
+<blockquote>
+move-files-to-folders-by-ext.sh - Move all the files in a directory into folders named by extension
+</blockquote>
+
+
+## [notes.sh](./notes.sh)
+<blockquote>
+notes.sh - shell script to manage hierarchy of note files
+</blockquote>
+
+
+## [python-stdin-to-json.py](./python-stdin-to-json.py)
+<blockquote>
+python-stdin-to-json.py - Dump standard input stream as a JSON-formatted output
+</blockquote>
+
+
+## [random-dict-password.sh](./random-dict-password.sh)
+<blockquote>
+random-dict-password.sh - Generate a random password from dictionary words
+</blockquote>
+
+
+## [random-password.sh](./random-password.sh)
+<blockquote>
+random-password.sh - Generate a random password
+</blockquote>
+
+
+## [remote-gpg](./remote-gpg)
+<blockquote>
+remote-gpg - Run gpg operations on a remote host
+
+original author: Dustin J. Mitchell <dustin@cs.uchicago.edu>
+</blockquote>
+
+
+## [reset-ntp.sh](./reset-ntp.sh)
+<blockquote>
+reset-ntp.sh - Update the time on a box using ntp
+</blockquote>
+
+
+## [ssh](./ssh)
+<blockquote>
+ssh - ssh wrapper to override TERM setting so that ssh will send the one we want remotely
+</blockquote>
+
+
+## [ssh-config-hosts.sh](./ssh-config-hosts.sh)
+<blockquote>
+ssh-config-hosts.sh - Recursively find any 'Host <host>' lines in local ssh configs
+
+Usage: ssh-config-hosts [FILE]
+</blockquote>
+
+
+## [ssh-mass-run-script.sh](./ssh-mass-run-script.sh)
+<blockquote>
+ssh-mass-run-script.sh - send a script to a lot of hosts and then execute it on them
+
+Note: this script does not fail on error, in order to work on as many hosts as possible.
+</blockquote>
+
+
+## [terraform-find-missing-vars.pl](./terraform-find-missing-vars.pl)
+<blockquote>
+terraform-find-missing-vars.pl - Find missing variable definitions in a Terraform module
+</blockquote>
+
+
+## [ubuntu-18.04-setup-dnsmasq.sh](./ubuntu-18.04-setup-dnsmasq.sh)
+<blockquote>
+ubuntu-18.04-setup-dnsmasq.sh - Set up DNSMASQ on Ubuntu 18.04
+</blockquote>
+
+
+## [ubuntu-list-pkgs-by-date.sh](./ubuntu-list-pkgs-by-date.sh)
+<blockquote>
+ubuntu-list-pkgs-by-date.sh - Self explanatory
+</blockquote>
+
+
+## [uniqunsort](./uniqunsort)
+<blockquote>
+uniqunsort - Remove duplicated lines from stdin, print to stdout
+</blockquote>
+
+
+## [urlencode.sh](./urlencode.sh)
+<blockquote>
+urlencode.sh - Print a string URL-encoded
+</blockquote>
+
+
+## [virtualenv](./virtualenv)
+<blockquote>
+virtualenv - Run virtualenv, installing it if needed
+</blockquote>
+
+
+## [wget-mirror.sh](./wget-mirror.sh)
+<blockquote>
+wget-mirror.sh - Use Wget to create a mirror of a website
+</blockquote>
+
+
+## [wordpress-salt-envs.sh](./wordpress-salt-envs.sh)
+<blockquote>
+wordpress-salt-envs.sh - Download the default salts for WordPress
+</blockquote>
+
+
+## [xml-lint](./xml-lint)
+<blockquote>
+xml-lint - Wrapper around xmlllint to install it if necessary
+</blockquote>
+
+
