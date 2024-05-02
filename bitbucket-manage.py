@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# bitbucket-manage.py
-# Copyright (C) 2023 Peter W <31324861+peterwwillis@users.noreply.github.com>
+# bitbucket-manage.py - A management CLI tool for Bitbucket repositories
 
 import io
 import os

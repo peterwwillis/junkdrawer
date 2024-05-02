@@ -1,10 +1,12 @@
 #!/usr/bin/env sh
-# Open a shell in a Kubernetes pod.
+# k8s-run-shell.sh - Start a K8s pod and open an interactive shell, then destroy it on exit
+# 
 # Installs some basic packages and drop user into command prompt in a screen session.
 # On exit, pod is deleted.
 # 
 # All arguments are passed to 'kubectl run' before the command arguments,
 # so you can pass things like the k8s namespace.
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

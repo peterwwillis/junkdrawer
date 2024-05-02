@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# urlencode.sh - Print a string URL-encoded
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

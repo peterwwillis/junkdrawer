@@ -1,2 +1,4 @@
 #!/usr/bin/env sh
+# flatpak-run-zoom - Run Zoom using Flatpak
+
 flatpak run us.zoom.Zoom

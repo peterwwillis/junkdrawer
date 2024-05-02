@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# d-java - Run Java from Docker
+
 set -eu
 
 DOCKER_IMG_TAG="alpine"

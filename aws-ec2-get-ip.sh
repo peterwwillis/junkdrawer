@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# aws-ec2-get-ip.sh - Get the IPs of running AWS EC2 instances
+
 set -e -o pipefail
 [ -n "${DEBUG:-}" ] && set -x
 

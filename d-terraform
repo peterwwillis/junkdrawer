@@ -1,2 +1,4 @@
 #!/usr/bin/env bash
+# d-terraform - Run Terraform CLI from Docker
+
 docker run -i -t hashicorp/terraform:light "$@"

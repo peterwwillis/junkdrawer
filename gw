@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gw - a git worktree wrapper
+# gw - A Terminal User Interface wrapper to make Git worktrees easier to manage
 
 #set -eu
 #[ "${DEBUG:-0}" = "1" ] && set -x

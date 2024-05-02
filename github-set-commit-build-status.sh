@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# github-set-commit-build-status.sh - Set commit build status for a GitHub commit
+
 set -eo pipefail
 [ x"$DEBUG" = "x1" ] && set -x
 

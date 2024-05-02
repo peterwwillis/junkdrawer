@@ -1,13 +1,6 @@
-#!/bin/sh
-# This script runs a detached Docker container with an entrypoint to run an sshd daemon.
-set -eux
-
-#CONTAINER_IMG=
-CONTAINER_USER="deploy" # the user the container runs as
-CONTAINER_HOME="/home/$CONTAINER_USER"
-HOST_SSH_PORT="2222" # The port to export sshd to on localhost
-PUBKEY="$HOME/.ssh/id_ed25519.pub"
-
+#!/usr/bin/env sh
+# docker-detach-sshd.sh - Run a detached Docker container with an entrypoint to run an sshd daemon
+# 
 # Before running this script, create an ssh key on the local host:
 #       ssh-keygen -t ed25519 -N ''
 #
@@ -20,6 +13,15 @@ PUBKEY="$HOME/.ssh/id_ed25519.pub"
 # the SSH public key created above (so we can login with it),
 # maps in the entrypoint to set up and start sshd,
 # and exports the sshd port to the local host.
+
+set -eux
+
+#CONTAINER_IMG=
+CONTAINER_USER="deploy" # the user the container runs as
+CONTAINER_HOME="/home/$CONTAINER_USER"
+HOST_SSH_PORT="2222" # The port to export sshd to on localhost
+PUBKEY="$HOME/.ssh/id_ed25519.pub"
+
 
 docker run \
         --cap-add=SYS_PTRACE \

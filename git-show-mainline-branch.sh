@@ -1,6 +1,9 @@
 #!/usr/bin/env sh
+# git-show-mainline-branch.sh - Attempt to show mainline branch of a Git repository
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
+
 _git_remote_HEAD () {
     git branch -rl | grep -oE "HEAD -> (.*)" | sed -E "s/^.*HEAD -> //"
 }

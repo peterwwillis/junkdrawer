@@ -1,2 +1,4 @@
 #!/usr/bin/env sh
+# flatpak-run-thunderbird - Run Thunderbird using Flatpak
+
 flatpak run org.mozilla.Thunderbird "$@"

@@ -1,6 +1,7 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env sh
+# aws-ecr-create-repository - Create an AWS ECR repository
 
+set -eu
 
 _repo_exists () {
     local repo="$1"; shift

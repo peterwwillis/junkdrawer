@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Linux bluetooth needs a kick in the pants every time I connect my headset :(
+# bluetooth-reset.sh - Linux bluetooth needs a kick in the pants every time I connect my headset :(
 
 _system_ctl () {	# _system_ctl SERVICE COMMAND
     if    command -v rc-service 2>/dev/null 1>&2    ; then  sudo rc-service $1 $2

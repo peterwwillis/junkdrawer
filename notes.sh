@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # notes.sh - shell script to manage hierarchy of note files
-# Copyright (C) 2022  Peter Willis
+
 set -eu
 
 NOTES_VERSION="0.1.0"

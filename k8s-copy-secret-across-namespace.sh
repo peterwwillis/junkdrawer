@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# k8s-copy-secret-across-namespace.sh - Copy a Kubernetes secret into a new namespace
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

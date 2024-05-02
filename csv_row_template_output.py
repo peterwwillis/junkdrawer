@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# csv_row_template_output.py - Generate a set of files based on a Python template and CSV file
 
 """ 
     Use a Python template and CSV to generate a directory of files.

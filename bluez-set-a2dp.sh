@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# bluez-set-a2dp.sh - Try to force-enable A2DP mode for Bluetooth devices
+
 set -u
 [ "${DEBUG:-0}" = "1" ] && set -x
 

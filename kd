@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# kd - kubernetes command terminal UI wrapper
-# Copyright (C) 2022  Peter Willis
+# kd - A Terminal User Interface wrapper for Kubernetes commands
 #
 # kd is a wrapper around common kubernetes commands to simplify running various
 # k8s tasks without needing to remember commands or rely on bash-completion.
 # It supplies a text UI (optionally using the 'dialog' tool) for prompts.
 # 
 # Run 'kd' and select a command, or select DEFAULT to always use the defaults.
-# 
 
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# ad-ldap-tool.sh - Search Microsoft Active Directory using ldapsearch
+
 set -e
 [ x"$DEBUG" = "x1" ] && set -x
 

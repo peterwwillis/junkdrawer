@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# docker-registry-list-repositories - List Docker CLI config's repositories
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

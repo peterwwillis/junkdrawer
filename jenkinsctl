@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
-# jenkinsctl - a command-line wrapper around building and running Jenkins
+# jenkinsctl - a command-line wrapper around building and running a Jenkins instance
+
 set -eu
 set -a # automatically export any set variable (that isn't 'local')
 

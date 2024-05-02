@@ -1,4 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env sh
+# git-askpass-netrc.sh - Use .netrc with Git Askpass
+# 
 # This is mostly unnecessary right now. It was written with the idea that maybe
 # one could use a fake username and then substitute it later with a new username
 # and a specific personal access token.

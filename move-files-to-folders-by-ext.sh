@@ -1,6 +1,5 @@
 #!/usr/bin/env sh
-# Move all the files in a directory into folders named by extension
-# Usage:   move-files-to-folders-by-ext.sh [DIR]
+# move-files-to-folders-by-ext.sh - Move all the files in a directory into folders named by extension
 set -eu
 
 _move_files () {
@@ -13,4 +12,5 @@ _move_files () {
     done
 }
 
+# Usage:   move-files-to-folders-by-ext.sh [DIR]
 _move_files "${1:-.}"

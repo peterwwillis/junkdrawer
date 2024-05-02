@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# jenkins-generate-user-token.sh - Generates a Jenkins user token
+
 set -eo pipefail
 
 function _usage () {

@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# k8s-diagnose-site.sh - Attempt to diagnose a web site in K8s
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

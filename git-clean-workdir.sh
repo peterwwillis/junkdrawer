@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# git-clean-workdir.sh - Clean up temporary files in a Git working directory
+
 [ "${DEBUG:-0}" = "1" ] && set -x
 
 CWD="$(pwd)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Takes a groovy file, replaces some variables, and executes it on a remote Jenkins instance.
+# jenkins-run-groovy-remote.sh - Takes a groovy file, replaces some variables, and executes it on a remote Jenkins instance.
 # 
 # Sample groovy file:
 #   print "ls -la".execute().getText()

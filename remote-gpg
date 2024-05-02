@@ -1,5 +1,6 @@
-#! /bin/bash
-# remote-gpg   
+#!/usr/bin/env bash
+# remote-gpg - Run gpg operations on a remote host
+# 
 # original author: Dustin J. Mitchell <dustin@cs.uchicago.edu>
 
 set -e

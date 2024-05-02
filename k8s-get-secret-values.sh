@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# Output all kubernetes secret keys and values.
-# Arguments are passed to 'kubectl get secret'
+# k8s-get-secret-values.sh - Output kubernetes secret keys and values in plaintext
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

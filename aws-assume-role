@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# aws-assume-role - wrapper around role-assuming
+# aws-assume-role - A wrapper to make it easier to assume AWS roles
 # 
 # The following is specifically written to return an exit code,
 # _without exiting the current shell session_.

@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# aws-cli-cache-auth-keys.sh - Extract the auth keys from a cached AWS CLI authentication json file
+
 if [ $# -lt 1 ] ; then
     echo "Usage: $0 ~/.aws/cli/cache/some-file.json"
     exit 1

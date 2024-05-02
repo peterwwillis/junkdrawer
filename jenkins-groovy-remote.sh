@@ -1,4 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env sh
+# jenkins-groovy-remote.sh - Run a Groovy file on a Jenkins server (via the API)
+
 set -e
 [ -n "$DEBUG" ] && set -x
 

@@ -1,4 +1,5 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# ubuntu-list-pkgs-by-date.sh - Self explanatory
 
 __option1 () {
     # Option 1: use timestamps from /var/lib/dpkg/info/.

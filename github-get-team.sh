@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# github-get-team.sh - Use get-github-restapi.sh to get GitHub teams list
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 SD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

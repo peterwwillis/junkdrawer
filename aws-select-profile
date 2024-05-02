@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # aws-select-profile - Use 'dialog' to select an AWS profile and export it into your current shell.
-# Copyright (C) 2020-2022  Peter Willis
 # 
 # Assuming this script is in your PATH, simply run:
 #   $ `aws-select-profile`
