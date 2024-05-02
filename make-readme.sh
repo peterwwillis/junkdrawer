@@ -17,7 +17,7 @@ _do_script () {
     done <"$script"
     [ ${#description[@]} -gt 0 ] || return 0
     scripts+=("$script")
-    content+=( "$(printf "%s\n" "## [$script](./$script)" "<blockquote>" "${description[@]}" "</blockquote>" )" $'\n' )
+    content+=( "$(printf "%s\n" "## [${description[0]}](./$script)" "<blockquote>" "${description[@]:1}" "</blockquote>" )" $'\n' )
 }
 
 _main () {
