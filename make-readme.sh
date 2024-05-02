@@ -23,8 +23,14 @@ _do_script () {
     slug=${slug// /-}
     slug=${slug//[^a-zA-Z0-9-]}
     sanitized_desc="${description[0]//:/-}"
+    desc_nameless="${sanitized_desc/#$script}"
+    desc_name_only="${sanitized_desc// - *}"
+    if [ "$desc_name_only" = "$sanitized_desc" ] || [ "$desc_nameless" = "$sanitized_desc" ] ; then
+        desc_nameless=""
+        desc_name_only="$sanitized_desc"
+    fi
     tableofcontents+=("$slug" "$sanitized_desc")
-    content+=( "$(printf "%s\n" "## [${description[0]}](./$script)" "<blockquote>" "${description[@]:1}" "</blockquote>" )" $'\n' )
+    content+=( "$(printf "%s\n" "## [$desc_name_only](./$script)$desc_nameless" "<blockquote>" "${description[@]:1}" "</blockquote>" )" $'\n' )
 }
 
 _main () {
