@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# k8s-diff-secret-by-ns.sh - Diff k8s secrets between two namespaces
+
 set -u
 [ "${DEBUG:-0}" = "1" ] && set -x
 

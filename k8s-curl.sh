@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 # k8s-curl.sh - Curl the K8s API, from within a K8s pod
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

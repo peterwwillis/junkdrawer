@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# wget-mirror.sh - Use Wget to create a mirror of a website
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

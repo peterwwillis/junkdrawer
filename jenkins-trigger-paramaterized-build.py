@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# jenkins-trigger-paramaterized-build.py - Run a Jenkins parameterized build
 
 import sys, json, argparse
 

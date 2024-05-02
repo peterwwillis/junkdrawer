@@ -1,2 +1,4 @@
 #!/usr/bin/env sh
+# flatpak-run-slack - Run Slack using Flatpak
+
 flatpak run com.slack.Slack "$@"

@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# ubuntu-18.04-setup-dnsmasq.sh - Set up DNSMASQ on Ubuntu 18.04
+
 set -euo pipefail
 
 # Some more useful configuration tips at http://www.g-loaded.eu/2010/09/18/caching-nameserver-using-dnsmasq/

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Loads Jenkins authentication information and runs curl, passing in command-line arguments.
-# Re-use this to call curl on Jenkins servers.
+# jenkins-curl-wrapper.sh - Loads Jenkins authentication information and runs curl, passing in command-line arguments.
 # 
+# Re-use this to call curl on Jenkins servers.
 # By default gets and inserts a CSRF crumb in header.
 # Pass in '-XGET' or '-XPOST' followed by the rest of your arguments, depending
 # on the API calls you're making.

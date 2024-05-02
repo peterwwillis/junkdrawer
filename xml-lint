@@ -1,3 +1,5 @@
 #!/usr/bin/env sh
+# xml-lint - Wrapper around xmlllint to install it if necessary
+
 command -v xmllint 2>/dev/null || sudo apt install libxml2-utils
 xmllint --format "$@"

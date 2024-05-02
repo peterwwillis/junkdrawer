@@ -1,4 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env sh
+# aws-ecr-docker-login - Perform a Docker login to an AWS ECR repository
+
 set -eu
 
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)

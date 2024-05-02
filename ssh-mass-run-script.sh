@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ssh-mass-run-script.sh - send a script to a lot of hosts and then execute it on them
+# 
 # Note: this script does not fail on error, in order to work on as many hosts as possible.
 
 set -e -o pipefail

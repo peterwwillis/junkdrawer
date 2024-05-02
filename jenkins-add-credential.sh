@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Adds a credential to Jenkins credential store via REST API
+# jenkins-add-credential.sh - Adds a credential to Jenkins credential store via REST API
 # 
 # Example:
 # 

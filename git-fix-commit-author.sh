@@ -1,4 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env sh
+# git-fix-commit-author.sh - Rewrite Git history to correct the wrong commit author details
+
 set -e -u
 
 read -r -p "Old e-mail? " OLD_EMAIL

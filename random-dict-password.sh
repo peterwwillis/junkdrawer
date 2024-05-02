@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # random-dict-password.sh - Generate a random password from dictionary words
-# Copyright (C) 2022 Peter W
+
 set -eu
 if [ "${1:-}" = "-h" -o "${1:-}" = "--help" ] ; then
     cat <<EOUSAGE

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# bitbucket-list-repo-commits.py - Return a CSV of Bitbucket repositories
+
 import sys, requests
 from requests.auth import HTTPBasicAuth
 

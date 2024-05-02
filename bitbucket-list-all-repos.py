@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# bitbucket-list-all-repos.py - Return a CSV file of Bitbucket repositories
+
 import sys
 import csv
 import netrc # apparently just importing this makes 'requests' do the right thing!

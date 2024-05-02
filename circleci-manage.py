@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# circleci-manage.py
-# Copyright (C) 2022 Peter W <31324861+peterwwillis@users.noreply.github.com>
+# circleci-manage.py - A management CLI for CircleCI operations the official CLI doesn't support
 
 import os
 import sys

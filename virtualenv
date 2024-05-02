@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
+# virtualenv - Run virtualenv, installing it if needed
+
 set -eu
 if ! python -m virtualenv -e '1' ; then
     pip3 install virtualenv
 fi
-python3 -m virtualenv "$@"
+python -m virtualenv "$@"

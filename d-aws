@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# d-aws - Run AWS CLI from Docker
 
 set -o errexit
 set -o nounset

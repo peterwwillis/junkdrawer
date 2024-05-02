@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# aws-rds-get-ip.sh - Get AWS RDS IP addresses for running instances
+
 set -e -o pipefail
 [ -n "${DEBUG:-}" ] && set -x
 

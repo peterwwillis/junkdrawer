@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# aws-ecs-utils.sh - Wrapper for simpler operations on AWS ECS
+
 set -e -o pipefail -u
 [ -n "${DEBUG:-}" ] && set -x
 

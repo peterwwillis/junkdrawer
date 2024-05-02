@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env sh
+# apt-update-security-packages.sh - Update Apt packages for security updates
 
 _find_procs_deleted_deps () {
     ps xh -o pid |

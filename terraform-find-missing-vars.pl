@@ -1,4 +1,6 @@
 #!/usr/bin/env perl
+# terraform-find-missing-vars.pl - Find missing variable definitions in a Terraform module
+
 use strict;
 use warnings;
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# k8s-deployment-restart.sh - Restart a K8s deployment
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

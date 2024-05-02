@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# docker-login-list-registries - List Docker CLI config's registries
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

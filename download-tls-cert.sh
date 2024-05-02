@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# download-tls-cert.sh - Download TLS certificate from a host/port
+
 set -e
 _get_cert () {
   openssl s_client -showcerts -connect "$1":"$2" </dev/null 2>/dev/null | openssl x509 -outform PEM 

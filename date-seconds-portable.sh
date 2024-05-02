@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# date-seconds-portable.sh - A portable implementation of 'date' output, given SECONDS
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

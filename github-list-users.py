@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# github-list-users.py - List GitHub users using 'github' Python library
+
 """ Lists all valid GitHub users that we should allow in a groups.yml file.
 
     To run this script, you must have the PyGithub Python package installed,

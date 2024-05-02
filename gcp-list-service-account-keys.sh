@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# gcp-list-service-account-keys.sh - List GCP service account keys
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

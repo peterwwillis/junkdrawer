@@ -1,4 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env sh
+# git-list-repo-files.sh - List all files checked into a git repository
+
 if [ "$1" = "-h" -o "$1" = "--help" ] ; then
     echo "Usage: $0 [OPTIONS] [REF]"
     echo ""

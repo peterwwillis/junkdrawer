@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 # git-commit-file.sh - automation for committing files to git
+
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# assume the admin role and execute arbitrary commands
+# aws-assume-admin-role - Assume an admin role and execute arbitrary commands
+
 TOPLEVEL=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 
 set -e -o pipefail

@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# docker-run-gcloud - Run GCloud CLI from Docker
+
 set -eu
 
 docker run \

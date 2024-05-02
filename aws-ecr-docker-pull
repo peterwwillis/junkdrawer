@@ -1,4 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env sh
+# aws-ecr-docker-pull - Pull a Docker image from an AWS ECR registry
+
 set -eu
 
 if [ $# -lt 1 ] ; then

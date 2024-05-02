@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# butler-jenkins-export-import.sh - Use Butlet to export and import jobs and credentials for Jenkins servers
+
 set -e -o pipefail -u
 
 if [ ! -e butler ] ; then

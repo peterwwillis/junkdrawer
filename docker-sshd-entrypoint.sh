@@ -1,5 +1,5 @@
-#!/bin/sh
-# Install and run sshd in a Docker container
+#!/usr/bin/env sh
+# docker-sshd-entrypoint.sh - Install and run sshd in a Docker container
 SSHDPORT="2222"
 
 # Install sshd if it wasn't before. Try to use sudo if we're not root.

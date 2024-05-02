@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# git-lfs-compare.sh - Compare the files in a Git repository with the files in Git LFS
 
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x

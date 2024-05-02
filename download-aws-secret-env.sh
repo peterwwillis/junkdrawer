@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# download-aws-secret-env.sh v0.2
+# download-aws-secret-env.sh v0.2 - Download AWS Secrets Manager secrets, store in a file, and execute a program
+
 [ "${DEBUG:-0}" = "1" ] && set -x
 
 

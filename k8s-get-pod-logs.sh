@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# k8s-get-pod-logs.sh - Save any Crashing, Error, or Failed pods' logs to a file
+
 #set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 

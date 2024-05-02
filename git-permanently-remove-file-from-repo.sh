@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# git-permanently-remove-file-from-repo.sh - Rewrite history to permanently remove a file from a Git repository
 
 remove_file_from_git () {
     local file="$1"; shift
