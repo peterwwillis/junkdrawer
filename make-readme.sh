@@ -45,13 +45,13 @@ _main () {
         fi
     done
 
-    printf "%s\n" "Table of Contents"
+    #printf "%s\n" "Table of Contents"
 
-    while read -r slug ; do
-        printf "%s\n" " * [${tableofcontents[$slug]}](#$slug)"
-    done <<<"$(printf "%s\n" "${!tableofcontents[@]}" | sort)"
+    #while read -r slug ; do
+    #    printf "%s\n" " * [${tableofcontents[$slug]}](#$slug)"
+    #done <<<"$(printf "%s\n" "${!tableofcontents[@]}" | sort)"
 
-    printf "%s\n\n\n" "---"
+    #printf "%s\n\n\n" "---"
 
     printf "%s\n" "${content[@]}"
 }
