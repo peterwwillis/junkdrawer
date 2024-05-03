@@ -1,5 +1,12 @@
-#!/usr/bin/env sh
-# k8s-diff-secret-by-ns.sh - Diff k8s secrets between two namespaces
+#!/usr/bin/env bash
+# k8s-diff-secret-by-ns.sh - Diff all of the secrets [and values] between two namespaces
+# 
+# This is a rather verbose/complete diffing of all the secrets between two namespaces.
+# You're going to get a lot of noise (and it will take a long time) if there are
+# a lot of Helm releases (or other secrets) in either namespace.
+# 
+# To just diff the names of the secrets, or just diff two individual secrets,
+# see k8s-diff-secret.sh
 
 set -u
 [ "${DEBUG:-0}" = "1" ] && set -x
@@ -14,16 +21,13 @@ _cleanup () {
     rm -f "${tmp1:-}" "${tmp2:-}"
     exit $ret
 }
-trap _cleanup EXIT TERM INT HUP ABRT STOP QUIT
+trap _cleanup EXIT TERM INT HUP ABRT QUIT
 
 _get_secret () {
     _ns="$1" _secret="$2" _file="$3"
-    if ! kubectl -n "$_ns" get secret "$_secret" -o yaml 2>/dev/null >"$_file" ; then
+    if ! kubectl -n "$_ns" get secret "$_secret" -o go-template='{{range $k,$v := .data}}{{printf "%s=%s" $k $v}}{{"\n"}}{{end}}'  2>/dev/null >"$_file" ; then
         echo "# not found: namespace $_ns secret $_secret"
         return 1
-    else
-        yq -M .data <"$_file" >"$_file.data"
-        mv -f "$_file.data" "$_file"
     fi
     return 0
 }
@@ -37,7 +41,8 @@ _cmd_diff_k8s_secrets () {
 }
 
 _cmd_diff_k8s_secret () {
-    ns1="$1" ns2="$2" secret="$3"
+    local ns1="$1" ns2="$2" secret="$3"
+    local tmp1 tmp2 dodiff
     tmp1="$(mktemp -t "$ns1.$secret.XXXXXX")"
     tmp2="$(mktemp -t "$ns2.$secret.XXXXXX")"
     dodiff=1
@@ -55,36 +60,44 @@ _cmd_diff_k8s_secret () {
 }
 
 _cmd_compare_ns () {
-    NS1="$1" NS2="$2" ; shift 2
-    secrets1="$(kubectl -n "$NS1" get secret --no-headers=true | awk '{print $1}')"
-    secrets2="$(kubectl -n "$NS2" get secret --no-headers=true | awk '{print $1}')"
+    local ns1="$1" ns2="$2" ; shift 2
+    local found
+    local -a secrets1=( $(kubectl -n "$ns1" get secret --no-headers=true | awk '{print $1}') )
+    local -a secrets2=( $(kubectl -n "$ns2" get secret --no-headers=true | awk '{print $1}') )
+    local -a not_in_s1=() not_in_s2=() to_diff=()
 
-    _cmd_diff_k8s_secrets "$NS1" "$NS2" $secrets1
-
-    donesecrets=""
-    for SECRET in $secrets1 ; do
-        donesecrets="$donesecrets $SECRET"
-    done
-
-    todosecrets2=""
-    for SECRET in $secrets2 ; do
-
-        missing=1
-        for donesecret in $donesecrets ; do
-            if [ "$donesecret" = "$SECRET" ] ; then
-                missing=0
+    for secret1 in "${secrets1[@]}" ; do
+        found=0
+        for secret2 in "${secrets2[@]}" ; do
+            if [ "$secret1" = "$secret2" ] ; then
+                to_diff+=("$secret1")
+                found=1
                 break
             fi
         done
-
-        if [ $missing -eq 1 ] ; then
-            todosecrets2="$todosecrets2 $SECRET"
-        fi
+        [ $found -eq 1 ] || not_in_s2+=("$secret1")
+    done
+    for secret2 in "${secrets2[@]}" ; do
+        found=0
+        for secret1 in "${secrets1[@]}" ; do
+            if [ "$secret2" = "$secret1" ] ; then
+                to_diff+=("$secret2")
+                found=1
+                break
+            fi
+        done
+        [ $found -eq 1 ] || not_in_s1+=("$secret2")
     done
 
-    if [ -n "$todosecrets2" ] ; then
-        _cmd_diff_k8s_secrets "$NS1" "$NS2" $todosecrets2
-    fi
+    for i in "${not_in_s1[@]}" ; do
+        echo "# not found: namespace $ns1 secret $i"
+    done
+    for i in "${not_in_s2[@]}" ; do
+        echo "# not found: namespace $ns1 secret $i"
+    done
+
+    to_diff_sort_uniq=( $(printf "%s\n" "${to_diff[@]}" | sort | uniq) )
+    _cmd_diff_k8s_secrets "$ns1" "$ns2" "${to_diff_sort_uniq[@]}"
 }
 
 _usage () {
@@ -95,6 +108,8 @@ Diff k8s secrets between two namespaces
 
 Commands:
   compare_ns NAMESPACE1 NAMESPACE2
+  diff_k8s_secrets NS1 NS2 SECRET1 SECRET2 ..
+  diff_k8s_secret NS1 NS1 SECRET
 
 EOUSAGE
     exit 1
