@@ -78,7 +78,7 @@ Table of Contents
  * [github-list-users.py](#github-list-userspy---list-github-users-using-github-python-library)
  * [github-set-commit-build-status.sh](#github-set-commit-build-statussh---set-commit-build-status-for-a-github-commit)
  * [gw](#gw---a-terminal-user-interface-wrapper-to-make-git-worktrees-easier-to-manage)
- * [helm-list-fast.sh](#helm-list-fastsh---a-much-faster-version-of-helm-list--a)
+ * [helm-list-fast.sh](#helm-list-fastsh---much-faster-version-of-helm-list)
  * [jenkins-add-credential.sh](#jenkins-add-credentialsh---adds-a-credential-to-jenkins-credential-store-via-rest-api)
  * [jenkins-curl-wrapper.sh](#jenkins-curl-wrappersh---loads-jenkins-authentication-information-and-runs-curl-passing-in-command-line-arguments)
  * [jenkins-generate-user-token.sh](#jenkins-generate-user-tokensh---generates-a-jenkins-user-token)
@@ -584,10 +584,9 @@ From https://stackoverflow.com/a/25357146/3760330
 </blockquote>
 
 
-## [helm-list-fast.sh](./helm-list-fast.sh) - a much faster version of 'helm list -A'
+## [helm-list-fast.sh](./helm-list-fast.sh) - Much faster version of 'helm list'
 <blockquote>
 
-About:
   This script exists because 'helm list' will query the Kubernetes API server
   in such a way that secrets take a looooong time to come back.
   To avoid that wait, here I just grab the secrets list with kubectl, and then
@@ -599,8 +598,8 @@ Requires:
   - kubectl, base64, gzip, jq, xargs, column
 
 TODO:
- - add columns 'STATUS', 'CHART', 'APP VERSION'
- - support single-namespace operation
+ - [ ] add columns 'STATUS', 'CHART', 'APP VERSION'
+ - [x] support single-namespace operation
 </blockquote>
 
 
