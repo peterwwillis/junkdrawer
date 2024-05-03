@@ -211,8 +211,10 @@ or:
 </blockquote>
 
 
-## [NOTE- I don't know who wrote this?? It was probably downloaded from the internet?](./docker-delete-registry-image.py)
+## [docker-delete-registry-image.py](./docker-delete-registry-image.py)
 <blockquote>
+
+NOTE: I don't know who wrote this?? It was probably downloaded from the internet?
 - Peter
 </blockquote>
 

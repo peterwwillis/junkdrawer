@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# docker-delete-registry-image.py
+# 
 # NOTE: I don't know who wrote this?? It was probably downloaded from the internet?
 # - Peter
 """
