@@ -91,8 +91,7 @@ Table of Contents
  * [k8s-curl.sh](#k8s-curlsh---curl-the-k8s-api-from-within-a-k8s-pod)
  * [k8s-deployment-restart.sh](#k8s-deployment-restartsh---restart-a-k8s-deployment)
  * [k8s-diagnose-site.sh](#k8s-diagnose-sitesh---attempt-to-diagnose-a-web-site-in-k8s)
- * [k8s-diff-secret-by-ns.sh](#k8s-diff-secret-by-nssh---diff-all-of-the-secrets-and-values-between-two-namespaces)
- * [k8s-diff-secret.sh](#k8s-diff-secretsh---a-simple-k8s-secret-differ)
+ * [k8s-diff-secrets.sh](#k8s-diff-secretssh---diff-kubernetes-secrets)
  * [k8s-find-all-resources.sh](#k8s-find-all-resourcessh---find-all-kubernetes-resources)
  * [k8s-get-events-notnormal.sh](#k8s-get-events-notnormalsh---get-all-kubernetes-events-not-of-type-normal)
  * [k8s-get-pod-logs.sh](#k8s-get-pod-logssh---save-any-crashing-error-or-failed-pods-logs-to-a-file)
@@ -678,25 +677,14 @@ Sample groovy file:
 </blockquote>
 
 
-## [k8s-diff-secret-by-ns.sh](./k8s-diff-secret-by-ns.sh) - Diff all of the secrets [and values] between two namespaces
+## [k8s-diff-secrets.sh](./k8s-diff-secrets.sh) - Diff Kubernetes secrets
 <blockquote>
 
-This is a rather verbose/complete diffing of all the secrets between two namespaces.
-You're going to get a lot of noise (and it will take a long time) if there are
-a lot of Helm releases (or other secrets) in either namespace.
+This script gives you multiple ways to diff the secrets (names and/or values)
+of Kubernetes secrets.
 
-To just diff the names of the secrets, or just diff two individual secrets,
-see k8s-diff-secret.sh
-</blockquote>
-
-
-## [k8s-diff-secret.sh](./k8s-diff-secret.sh) - A simple k8s secret differ
-<blockquote>
-
-Use this script to either diff the names of secrets between two namespaces,
-or to diff the values of two secrets (which may be in different namespaces).
-
-For a more complex/complete/parallel diff tool, see k8s-diff-secret-by-ns.sh
+To optimize for speed, secret values are not retrieved for diff if a secret
+does not exist in a namespace. Secret retrieval is parallelized with xargs.
 </blockquote>
 
 
