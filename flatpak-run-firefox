@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# flatpak-run-firefox - Run Firefox using Flatpak
+
+flatpak run org.mozilla.firefox
