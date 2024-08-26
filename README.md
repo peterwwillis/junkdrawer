@@ -303,6 +303,11 @@ use only exported variables:
 </blockquote>
 
 
+## [extract-script-comments.sh](./extract-script-comments.sh) - Generate a TSV of any shebang-interpreted scripts and their commented descriptions
+<blockquote>
+</blockquote>
+
+
 ## [flatpak-run-firefox](./flatpak-run-firefox) - Run Firefox using Flatpak
 <blockquote>
 </blockquote>
@@ -324,6 +329,11 @@ use only exported variables:
 
 
 ## [gcp-list-service-account-keys.sh](./gcp-list-service-account-keys.sh) - List GCP service account keys
+<blockquote>
+</blockquote>
+
+
+## [gen-piiaa-list.sh](./gen-piiaa-list.sh) - Generate list of scripts and descriptions for PIIAA
 <blockquote>
 </blockquote>
 
