@@ -206,6 +206,11 @@ or:
 </blockquote>
 
 
+## [dar-backup.sh](./dar-backup.sh) - generate a full and/or incremental backup using dar
+<blockquote>
+</blockquote>
+
+
 ## [date-seconds-portable.sh](./date-seconds-portable.sh) - A portable implementation of 'date' output, given SECONDS
 <blockquote>
 </blockquote>
@@ -295,6 +300,11 @@ Or you can call this script as an external executable and it will
 use only exported variables:
     cat Sample.txt | ./envsubst.sh
 
+</blockquote>
+
+
+## [flatpak-run-firefox](./flatpak-run-firefox) - Run Firefox using Flatpak
+<blockquote>
 </blockquote>
 
 
