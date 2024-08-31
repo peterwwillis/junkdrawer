@@ -93,6 +93,7 @@ _run_dar_single () {
 
     # If no matching 'full backup' is found, run a full backup
     if ! ls "$fullfilename."*.dar 2>/dev/null 1>/dev/null ; then
+
         mkdir -p "$(dirname "$fullfilename")"
         _run_dar -c "$fullfilename" -g "$file"
 
@@ -100,8 +101,10 @@ _run_dar_single () {
     # Otherwise run an incremental backup
         incrfilename="$( _generate_dar_incr_backup_filename "$file" )"
         lastincrfilename="$( _lookup_last_dar_incr_backup_filename "$file" )"
+
         mkdir -p "$(dirname "$fullfilename")" "$(dirname "$incrfilename")"
         _run_dar -c "$incrfilename" -g "$file" -A "$lastincrfilename"
+        _remove_empty_archive "$incrfilename"
     fi
 }
 
@@ -120,12 +123,27 @@ _lookup_last_dar_incr_backup_filename () {
     shastub="$( echo "$(pwd)/$filename" | sha256sum | cut -c 1-8 )"
     lastincrfile="$( ls "$BACKUP_DIR/$( date -u +%Y )/$( date -u +%m )/$filename.$shastub".*.dar 2>/dev/null | sort | tail -1 )"
     lastincrfilearchive="${lastincrfile%.[0-9]*.dar}"
+
     # If there was no previous incremental backup, then we need to start with the full backup
     # as the first incremental backup point (as this will now be the first incremental backup)
     if [ -z "$lastincrfile" ] ; then
         _generate_dar_full_backup_filename "$filepath"
     else
         echo "$lastincrfilearchive"
+    fi
+}
+_remove_empty_archive () {
+    filepath="$1" ; filename="$(basename "$filepath")" ; shift
+    dirpath="$(dirname "$filepath")"
+    archive="${filename%.[0-9]*.dar}"
+    
+    # Check if the archive backed up any files
+    if [ ! "${_dry_run:-0}" = "1" ] ; then
+        changed="$(dar -l "$dirpath/$archive" -as | tail -n +3 | wc -l)"
+        if [ $changed -lt 1 ] ; then
+            echo "$0: Archive '$dirpath/$archive' had no saved files; deleting archive to save space"
+            rm -f "$dirpath/$archive".*.dar "$dirpath/$archive".*.dar.sha1
+        fi
     fi
 }
 
