@@ -85,7 +85,7 @@ _run_dar_single () {
     file="$1"; shift
 
     if [ ! -f "$file" ] && [ ! -d "$file" ] ; then
-        echo "$0: ERROR: File '$file' is not a file or directory, cannot run backup"
+        _log "ERROR: File '$file' is not a file or directory, cannot run backup"
         _usage
     fi
 
@@ -110,28 +110,57 @@ _run_dar_single () {
 
 _generate_dar_full_backup_filename () {
     filepath="$1" ; filename="$(basename "$filepath")" ; shift
-    shastub="$( echo "$(pwd)/$filename" | sha256sum | cut -c 1-8 )"
-    echo "$BACKUP_DIR/$( date -u +%Y )/$filename.$shastub"
+    shastub="$( printf "%s\n" "$(pwd)/$filepath" | sha256sum | cut -c 1-8 )"
+
+    printf "%s\n" \
+        "$BACKUP_DIR/$( date -u +%Y )/$filename.$shastub"
 }
+
 _generate_dar_incr_backup_filename () {
     filepath="$1" ; filename="$(basename "$filepath")" ; shift
-    shastub="$( echo "$(pwd)/$filename" | sha256sum | cut -c 1-8 )"
-    echo "$BACKUP_DIR/$( date -u +%Y )/$( date -u +%m )/$filename.$shastub.$( date --utc +%Y%m%d-%H%M%S )"
+    shastub="$( printf "%s\n" "$(pwd)/$filepath" | sha256sum | cut -c 1-8 )"
+
+    printf "%s\n" \
+        "$BACKUP_DIR/$( date -u +%Y )/$( date -u +%m )/$filename.$shastub.$( date --utc +%Y%m%d-%H%M%S )"
 }
+
 _lookup_last_dar_incr_backup_filename () {
     filepath="$1" ; filename="$(basename "$filepath")" ; shift
-    shastub="$( echo "$(pwd)/$filename" | sha256sum | cut -c 1-8 )"
-    lastincrfile="$( ls "$BACKUP_DIR/$( date -u +%Y )/$( date -u +%m )/$filename.$shastub".*.dar 2>/dev/null | sort | tail -1 )"
-    lastincrfilearchive="${lastincrfile%.[0-9]*.dar}"
+    shastub="$( printf "%s\n" "$(pwd)/$filepath" | sha256sum | cut -c 1-8 )"
+
+    curyear="$( date -u +%Y )"
+    lastyear="$( date -u +%Y)"
+    curmonth="$( date -u +%m )"
+    lastmonth="0$((${curmonth##0}-1))"
+    # Set last year/month for archive file search
+    if [ "$curmonth" = "01" ] ; then
+        lastmonth="12"
+        lastyear="$((curyear-1))"
+    fi
+
+    # Look for the last incremental backup in a couple of places, due to year/month rollover
+    lastincrfile='' lastincrfilearchive=''
+    for incrpath in  "$curyear/$curmonth"  "$lastyear/$lastmonth" ; do
+
+        # Use file globbing to list .dar archives matching the path, filename, and SHA stub,
+        # sorting the result (which should work by date) and return the last file found.
+        lastincrfile="$( ls "$BACKUP_DIR/$incrpath/$filename.$shastub".*.dar 2>/dev/null | sort | tail -1 )"
+        lastincrfilearchive="${lastincrfile%.[0-9]*.dar}"
+        if [ -e "$lastincrfile" ] ; then
+            break
+        fi
+
+    done
 
     # If there was no previous incremental backup, then we need to start with the full backup
     # as the first incremental backup point (as this will now be the first incremental backup)
     if [ -z "$lastincrfile" ] ; then
         _generate_dar_full_backup_filename "$filepath"
     else
-        echo "$lastincrfilearchive"
+        printf "%s\n" "$lastincrfilearchive"
     fi
 }
+
 _remove_empty_archive () {
     filepath="$1" ; filename="$(basename "$filepath")" ; shift
     dirpath="$(dirname "$filepath")"
@@ -140,12 +169,15 @@ _remove_empty_archive () {
     # Check if the archive backed up any files
     if [ ! "${_dry_run:-0}" = "1" ] ; then
         changed="$(dar -l "$dirpath/$archive" -as | tail -n +3 | wc -l)"
-        if [ $changed -lt 1 ] ; then
-            echo "$0: Archive '$dirpath/$archive' had no saved files; deleting archive to save space"
+
+        if [ "$changed" -lt 1 ] ; then
+            _log "Archive '$dirpath/$archive' had no saved files; deleting archive to save space"
             rm -f "$dirpath/$archive".*.dar "$dirpath/$archive".*.dar.sha1
         fi
     fi
 }
+
+_log () { printf "$0: %s\n" "$*" ; }
 
 
 _main "$@"
