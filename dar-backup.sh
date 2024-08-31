@@ -14,18 +14,24 @@ Usage: $0 [OPTIONS] FILE [..]
 Make an incremental or full (if one doesn't exist yet) backup of a FILE (can be
 a directory), using Dar. FILE must be a path relative to the current directory.
 
-This script will create a backup directory ~/.Backup/ to store your backups in.
-Backups are stored in a hierarchical file tree based on year and month.
-The basename of DIR is the name of the backup file.
+The basename of FILE becomes the name of the backup file, and the whole
+path of the current working directory + FILE is SHA-checksum'd, truncated,
+and appended to the backup filename to uniquely identify the backup. In this
+way you can run backups from many different directories using the same name
+of a relative directory and the resulting filenames should not conflict.
+To discover which .Backup archive contains which files, just list the archive
+('dar -l path-to-archive.dar').
 
-If no full backup has been taken this year, a full backup of DIR is taken.
-Otherwise, an incremental backup is taken.
+Backups are stored in directory ~/.Backup/ matching this file hierarchy:
+  ~/.Backup/YEAR/MONTH/FILE.SHA-TRUNC.DATE-TIME
 
-There is no limit on the number of backups, so the more you run this script,
-the more incremental backups will pop up, but they will only be 24kB if nothing
-has changed.
+If no full backup has been taken, a full backup is taken.
+Otherwise an incremental backup is taken based on the last incremental backup.
+(If no files have changed, no new backup is saved)
 
-nice and ionice are used to lower the CPU and IO priorities as much as possible.
+'nice' and 'ionice' are used to lower the CPU and IO priorities as much as possible
+so that you can run this backup during normal working hours without impacting
+system performance.
 
 OPTIONS:
   -h                        This screen
@@ -128,27 +134,21 @@ _lookup_last_dar_incr_backup_filename () {
     filepath="$1" ; filename="$(basename "$filepath")" ; shift
     shastub="$( printf "%s\n" "$(pwd)/$filepath" | sha256sum | cut -c 1-8 )"
 
-    curyear="$( date -u +%Y )"
-    lastyear="$( date -u +%Y)"
+    # Search for the last incremental backup of this file in this year
     curmonth="$( date -u +%m )"
-    lastmonth="0$((${curmonth##0}-1))"
-    # Set last year/month for archive file search
-    if [ "$curmonth" = "01" ] ; then
-        lastmonth="12"
-        lastyear="$((curyear-1))"
-    fi
-
-    # Look for the last incremental backup in a couple of places, due to year/month rollover
-    lastincrfile='' lastincrfilearchive=''
-    for incrpath in  "$curyear/$curmonth"  "$lastyear/$lastmonth" ; do
+    while [ ! "$curmonth" = "00" ] ; do
 
         # Use file globbing to list .dar archives matching the path, filename, and SHA stub,
         # sorting the result (which should work by date) and return the last file found.
+        incrpath="$( date -u +%Y )/$curmonth"
         lastincrfile="$( ls "$BACKUP_DIR/$incrpath/$filename.$shastub".*.dar 2>/dev/null | sort | tail -1 )"
         lastincrfilearchive="${lastincrfile%.[0-9]*.dar}"
+
         if [ -e "$lastincrfile" ] ; then
             break
         fi
+
+        curmonth="0$((${curmonth##0}-1))"
 
     done
 
