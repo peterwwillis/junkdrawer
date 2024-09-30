@@ -14,18 +14,24 @@ Usage: $0 [OPTIONS] FILE [..]
 Make an incremental or full (if one doesn't exist yet) backup of a FILE (can be
 a directory), using Dar. FILE must be a path relative to the current directory.
 
-This script will create a backup directory ~/.Backup/ to store your backups in.
-Backups are stored in a hierarchical file tree based on year and month.
-The basename of DIR is the name of the backup file.
+The basename of FILE becomes the name of the backup file, and the whole
+path of the current working directory + FILE is SHA-checksum'd, truncated,
+and appended to the backup filename to uniquely identify the backup. In this
+way you can run backups from many different directories using the same name
+of a relative directory and the resulting filenames should not conflict.
+To discover which .Backup archive contains which files, just list the archive
+('dar -l path-to-archive.dar').
 
-If no full backup has been taken this year, a full backup of DIR is taken.
-Otherwise, an incremental backup is taken.
+Backups are stored in directory ~/.Backup/ matching this file hierarchy:
+  ~/.Backup/YEAR/MONTH/FILE.SHA-TRUNC.DATE-TIME
 
-There is no limit on the number of backups, so the more you run this script,
-the more incremental backups will pop up, but they will only be 24kB if nothing
-has changed.
+If no full backup has been taken, a full backup is taken.
+Otherwise an incremental backup is taken based on the last incremental backup.
+(If no files have changed, no new backup is saved)
 
-nice and ionice are used to lower the CPU and IO priorities as much as possible.
+'nice' and 'ionice' are used to lower the CPU and IO priorities as much as possible
+so that you can run this backup during normal working hours without impacting
+system performance.
 
 OPTIONS:
   -h                        This screen
@@ -85,7 +91,7 @@ _run_dar_single () {
     file="$1"; shift
 
     if [ ! -f "$file" ] && [ ! -d "$file" ] ; then
-        echo "$0: ERROR: File '$file' is not a file or directory, cannot run backup"
+        _log "ERROR: File '$file' is not a file or directory, cannot run backup"
         _usage
     fi
 
@@ -110,28 +116,51 @@ _run_dar_single () {
 
 _generate_dar_full_backup_filename () {
     filepath="$1" ; filename="$(basename "$filepath")" ; shift
-    shastub="$( echo "$(pwd)/$filename" | sha256sum | cut -c 1-8 )"
-    echo "$BACKUP_DIR/$( date -u +%Y )/$filename.$shastub"
+    shastub="$( printf "%s\n" "$(pwd)/$filepath" | sha256sum | cut -c 1-8 )"
+
+    printf "%s\n" \
+        "$BACKUP_DIR/$( date -u +%Y )/$filename.$shastub"
 }
+
 _generate_dar_incr_backup_filename () {
     filepath="$1" ; filename="$(basename "$filepath")" ; shift
-    shastub="$( echo "$(pwd)/$filename" | sha256sum | cut -c 1-8 )"
-    echo "$BACKUP_DIR/$( date -u +%Y )/$( date -u +%m )/$filename.$shastub.$( date --utc +%Y%m%d-%H%M%S )"
+    shastub="$( printf "%s\n" "$(pwd)/$filepath" | sha256sum | cut -c 1-8 )"
+
+    printf "%s\n" \
+        "$BACKUP_DIR/$( date -u +%Y )/$( date -u +%m )/$filename.$shastub.$( date --utc +%Y%m%d-%H%M%S )"
 }
+
 _lookup_last_dar_incr_backup_filename () {
     filepath="$1" ; filename="$(basename "$filepath")" ; shift
-    shastub="$( echo "$(pwd)/$filename" | sha256sum | cut -c 1-8 )"
-    lastincrfile="$( ls "$BACKUP_DIR/$( date -u +%Y )/$( date -u +%m )/$filename.$shastub".*.dar 2>/dev/null | sort | tail -1 )"
-    lastincrfilearchive="${lastincrfile%.[0-9]*.dar}"
+    shastub="$( printf "%s\n" "$(pwd)/$filepath" | sha256sum | cut -c 1-8 )"
+
+    # Search for the last incremental backup of this file in this year
+    curmonth="$( date -u +%m )"
+    while [ ! "$curmonth" = "00" ] ; do
+
+        # Use file globbing to list .dar archives matching the path, filename, and SHA stub,
+        # sorting the result (which should work by date) and return the last file found.
+        incrpath="$( date -u +%Y )/$curmonth"
+        lastincrfile="$( ls "$BACKUP_DIR/$incrpath/$filename.$shastub".*.dar 2>/dev/null | sort | tail -1 )"
+        lastincrfilearchive="${lastincrfile%.[0-9]*.dar}"
+
+        if [ -e "$lastincrfile" ] ; then
+            break
+        fi
+
+        curmonth="0$((${curmonth##0}-1))"
+
+    done
 
     # If there was no previous incremental backup, then we need to start with the full backup
     # as the first incremental backup point (as this will now be the first incremental backup)
     if [ -z "$lastincrfile" ] ; then
         _generate_dar_full_backup_filename "$filepath"
     else
-        echo "$lastincrfilearchive"
+        printf "%s\n" "$lastincrfilearchive"
     fi
 }
+
 _remove_empty_archive () {
     filepath="$1" ; filename="$(basename "$filepath")" ; shift
     dirpath="$(dirname "$filepath")"
@@ -140,12 +169,15 @@ _remove_empty_archive () {
     # Check if the archive backed up any files
     if [ ! "${_dry_run:-0}" = "1" ] ; then
         changed="$(dar -l "$dirpath/$archive" -as | tail -n +3 | wc -l)"
-        if [ $changed -lt 1 ] ; then
-            echo "$0: Archive '$dirpath/$archive' had no saved files; deleting archive to save space"
+
+        if [ "$changed" -lt 1 ] ; then
+            _log "Archive '$dirpath/$archive' had no saved files; deleting archive to save space"
             rm -f "$dirpath/$archive".*.dar "$dirpath/$archive".*.dar.sha1
         fi
     fi
 }
+
+_log () { printf "$0: %s\n" "$*" ; }
 
 
 _main "$@"
