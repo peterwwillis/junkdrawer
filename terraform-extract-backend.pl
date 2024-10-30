@@ -13,8 +13,6 @@ use JSON;
 use Getopt::Std;
 use Data::Dumper;
 
-@ARGV > 0 || die "Usage: $0 TF-FILE [TF-FILE ..]\n";
-
 my (%vars, %variables);
 
 my $OUTPUT_FORMAT = "flat"; # flat, json
