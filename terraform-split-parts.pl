@@ -88,11 +88,18 @@ sub dump_file {
     die "Error: undefined block" unless defined $block;
     die "Error: no name for block" unless exists $block->{'name'} and defined $block->{'name'};
 
-    # If block is a 'resource', make filename be the first argument (provider/resource name)
+    # Change the filename based on block type and args
     if ( exists $block->{'args'} and length( $block->{'args'} ) > 0 ) {
+
+        # If block is a 'resource', make filename be the first argument (provider/resource name)
         if ( $block->{'name'} eq "resource" ) {
             $fname = $block->{'args'}->[0] . ".tf";
+
+        # If block is a 'module', prepend 'module_', and then use the module name
+        } elsif ( $block->{'name'} eq "module" ) {
+            $fname = "module_" . $block->{'args'}->[0] . ".tf";
         }
+
     }
     if ( !defined $fname ) {
         $fname = $block->{'name'} . ".tf";
