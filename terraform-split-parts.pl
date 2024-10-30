@@ -24,60 +24,90 @@ EOUSAGE
     exit(1);
 }
 
+
+# Yes, this is a horribe cludge and needs to be turned into real Perl OO.
+# I'm lazy.
 sub process_backend {
 
     my $data = shift;
+    my %state = (
+        start_tf_block => 0,
+        new_block => 0,
+        block_name => "",
+        block_args => [],
+        entry => [],
+        block_list => []
+    );
 
-    my $start_tf_block = 0;
-    my $new_block = 0;
-    my $block_name;
-    my $block_args;
-    my @entry;
-    my @block_list;
+    my $handle_start = sub {
+        my ($self, $one, $two, $three, $four, $five) = @_;
+        print STDERR "Starting block $one\n";
+        #print STDERR "One $one two $two three $three four $four five $five\n";
+        $self->{start_tf_block} = 1;
+        $self->{new_block}++;
+        $self->{block_name} = $one;
+        if (defined $two) {
+            my $tmp = $two;
+            my @list;
+            while ( $tmp =~ s/^"([^"]+)"\s+// ) {
+                push @list, $1;
+            }
+            print STDERR "block_args $self->{block_args}\n";
+            $self->{block_args} = [ @list ];
+        }
+    };
+
+    my $handle_end = sub {
+        my ($self) = @_;
+        print STDERR "Ending block $self->{block_name}\n";
+        $self->{new_block}--;
+
+        if ( $self->{new_block} == 0 ) {
+
+            $self->{start_tf_block} = 0;
+
+            push( @{$self->{block_list}}, {
+                'name' => $self->{block_name},
+                'args' => [ @{$self->{block_args}} ],
+                'data' => [ @{$self->{entry}} ]
+            });
+
+            @{$self->{entry}} = ();
+        }
+    };
 
     for ( @$data ) {
 
-        print STDERR "LINE: '$_' start_tf_block $start_tf_block new_block $new_block\n";
+        print STDERR "LINE: '$_' start_tf_block $state{start_tf_block} new_block $state{new_block}\n";
 
-        if ( $start_tf_block == 0 ) {
-            if ( /^\s*(\w+)\s+(("[\w_-]+"\s+){0,})(\s*=\s*)?\{\s*$/ ) {
-                print STDERR "Starting block $1\n";
-                $start_tf_block = 1;
-                $new_block++;
-                $block_name = $1;
-                if (defined $2) {
-                    my $tmp = $2;
-                    my @list;
-                    while ( $tmp =~ s/^"([^"]+)"\s+// ) {
-                        push @list, $1;
-                    }
-                    $block_args = [ @list ];
+        if ( $state{start_tf_block} == 0 ) {
+            if ( /^\s*(\w+)\s+(("[\w_-]+"\s+){0,})(\s*=\s*)?\{\s*(\})?\s*$/ ) {
+                $handle_start->(\%state, $1, $2, $3, $4, $5);
+                # Block with no contents found; finish now
+                if ( defined $5 and $5 eq "}" ) {
+                    push @{$state{entry}}, "}";
+                    $handle_end->(\%state);
                 }
                 next;
             }
         }
 
-        elsif ( $start_tf_block ) {
+        elsif ( $state{start_tf_block} ) {
             if ( /{\s*$/ ) {
-                $new_block++;
+                $state{new_block}++;
             }
 
             print STDERR "adding '$_' to entry\n";
-            push @entry, $_;
+            push @{$state{entry}}, $_;
 
-            #if ( /^\s*}\s*$/ ) {
+             # allow other chars after the '}', for example in a variable def with '})'
             if ( /^\s*}/ ) {
-                $new_block--;
-                if ( $new_block == 0 ) {
-                    $start_tf_block = 0;
-                    push @block_list, { 'name' => $block_name, 'args' => [ @$block_args ], 'data' => [ @entry ] };
-                    @entry = ();
-                }
+                $handle_end->(\%state);
             }
         }
     }
 
-    return \@block_list;
+    return $state{block_list};
 }
 
 sub dump_file {
