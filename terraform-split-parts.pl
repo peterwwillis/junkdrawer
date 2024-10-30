@@ -14,6 +14,9 @@ Usage: $0 [OPTIONS] TF-FILE [..]
 
 Takes Terraform configs, parses the root-level blocks, and dumps them into files.
 
+If the block is a 'resource', dumps into a filename of the name of the resource.
+(you can combine them later if you want, ex: \`cat aws_*.tf > resource.tf\`)
+
 Appends to files in the current directory, so make sure you move to a temporary 
 directory before running this.
 
@@ -34,7 +37,8 @@ sub process_backend {
 
     for ( @$data ) {
 
-        #print STDERR "LINE: '$_' start_tf_block $start_tf_block new_block $new_block\n";
+        print STDERR "LINE: '$_' start_tf_block $start_tf_block new_block $new_block\n";
+
         if ( $start_tf_block == 0 ) {
             if ( /^\s*(\w+)\s+(("[\w_-]+"\s+){0,})(\s*=\s*)?\{\s*$/ ) {
                 print STDERR "Starting block $1\n";
@@ -51,16 +55,18 @@ sub process_backend {
                 }
                 next;
             }
-        } else {
+        }
+
+        elsif ( $start_tf_block ) {
             if ( /{\s*$/ ) {
                 $new_block++;
             }
-        }
-        if ( $start_tf_block ) {
+
             print STDERR "adding '$_' to entry\n";
             push @entry, $_;
 
-            if ( /^\s*}\s*$/ ) {
+            #if ( /^\s*}\s*$/ ) {
+            if ( /^\s*}/ ) {
                 $new_block--;
                 if ( $new_block == 0 ) {
                     $start_tf_block = 0;
@@ -74,10 +80,44 @@ sub process_backend {
     return \@block_list;
 }
 
+sub dump_file {
+    my $block = shift;
+    my $fname;
+
+    print Dumper($block);
+    die "Error: undefined block" unless defined $block;
+    die "Error: no name for block" unless exists $block->{'name'} and defined $block->{'name'};
+
+    # If block is a 'resource', make filename be the first argument (provider/resource name)
+    if ( exists $block->{'args'} and length( $block->{'args'} ) > 0 ) {
+        if ( $block->{'name'} eq "resource" ) {
+            $fname = $block->{'args'}->[0] . ".tf";
+        }
+    }
+    if ( !defined $fname ) {
+        $fname = $block->{'name'} . ".tf";
+    }
+
+    open( my $fh, '>>', $fname ) || die "Error: could not open file '$fname' for append";
+
+    print $fh "\n";
+
+    my $startline = "$block->{'name'} ";
+    $startline .= join(" ", (map { "\"$_\"" } @{$block->{'args'}}) );
+    $startline .= " {\n";
+    print $fh $startline;
+
+    print $fh join("\n", @{$block->{'data'}});
+    print $fh "\n\n";
+
+    close($fh);
+}
+
 sub process_file {
 
     open( my $vfdata, shift @_ ) || die "Error: $!";
-    my @vfdata = map { chomp; /^\s*#/ ? () : $_ } <$vfdata>;
+    #my @vfdata = map { chomp; /^\s*#/ ? () : $_ } <$vfdata>;
+    my @vfdata = map { chomp; $_ } <$vfdata>;
     close($vfdata);
 
     process_backend(\@vfdata);
@@ -95,19 +135,6 @@ my %opts;
 foreach my $arg (@ARGV) {
     my $list = process_file($arg);
     foreach my $block ( @$list ) {
-        print Dumper($block);
-        die "Error: undefined block" unless defined $block;
-        die "Error: no name for block" unless exists $block->{'name'} and defined $block->{'name'};
-        open( my $fh, '>>', "$block->{'name'}.tf" ) || die "Error: could not open file '$block->{'name'}.tf' for append";
-        print $fh "\n";
-        print $fh $block->{'name'} . 
-            " " . 
-            join(" ", 
-                (map { "\"$_\"" } @{$block->{'args'}} )
-            ) .
-            " {\n";
-        print $fh join("\n", @{$block->{'data'}});
-        print $fh "\n\n";
-        close($fh);
+        dump_file($block);
     }
 }
