@@ -82,7 +82,7 @@ _run_dar () {
                 --quiet \
                 --hash sha1 \
                 "$@" \
-                --compression=zstd \
+                --compression=lzo \
                 --alter="no-case" \
                 -Z "*.gz" -Z "*.tgz" -Z "*.bz2" -Z "*.tbz2" -Z "*.xz" -Z "*.txz" -Z "*.zip" -Z "*.png" -Z "*.jpg" -Z "*.jpeg" -Z "*.avi" -Z "*.mpg" -Z "*.mpeg" -Z "*.mp3"
 }
