@@ -700,7 +700,26 @@ Note: this script does not fail on error, in order to work on as many hosts as p
 </blockquote>
 
 
+## [strip-terminal-colors](./strip-terminal-colors) - does what it says on the tin
+<blockquote>
+</blockquote>
+
+
+## [terraform-extract-backend.pl](./terraform-extract-backend.pl) - extract backend configuration from terraform module
+<blockquote>
+
+Options:
+  -o FORMAT               Output format (flat, json)
+
+</blockquote>
+
+
 ## [terraform-find-missing-vars.pl](./terraform-find-missing-vars.pl) - Find missing variable definitions in a Terraform module
+<blockquote>
+</blockquote>
+
+
+## [terraform-split-parts.pl](./terraform-split-parts.pl) - extract blocks from terraform configs and put them into separate files
 <blockquote>
 </blockquote>
 
