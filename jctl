@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -eu
+[ "${DEBUG:-0}" = "1" ] && set -x
+
+
+_usage () {
+	cat <<EOUSAGE
+Usage: jctl [OPTIONS] [ARGS]
+
+Arguments:
+    boot		Show boot messages
+    kernel		Show kernel messages
+    file PATH		Show logs from executable PATH
+    service SERVICE	Show logs from unit SERVICE
+    uid NUMBER		Show logs from userid NUMBER
+    pid PID		Show logs from process id PID
+    listsvc		Shows all systemd services
+
+Options:
+    -F			DON'T tail the logs
+    -v			Verbose mode
+    --since RANGE	Logs since RANGE ("1 day ago", "2019-07-05 21:30:01")
+    --until RANGE	Logs until RANGE ("1 day ago", "2019-07-05 21:30:01")
+    -o FMT		Show output in format FMT (short-precise, short,
+			short-monotonic, short-iso, json, export, verbose, cat) 
+EOUSAGE
+	exit 1
+}
+
+_cmd_listsvc () {
+	systemctl list-units --type=service --no-pager | cat | tail -n +2 | while : ; do read -r foo ; [ -z "$foo" ] && break ; echo "$foo" ; done
+}
+
+declare -a journalctl_args=(-p 0..7)
+
+[ $# -gt 0 ] || _usage
+
+dont_tail=0
+case "$1" in
+	listsvc)
+		_cmd_listsvc ; exit 0 ;;
+	boot)
+		journalctl_args+=("-b") ;;
+	-F)
+		dont_tail=1 ;;
+	-v)
+		journalctl_args+=("-o" "verbose") ;;
+	-o)
+		shift;
+		if [ "$1" = "json" ] ; then
+			journalctl_args+=("-o" "json-pretty") ;
+		else 	journalctl_args+=("-o" "$1") ;
+		fi ;;
+	kernel)
+		journalctl_args+=("-k") ;;
+	file)
+		shift; journalctl_args+=("$1") ;;
+	service)
+		shift; journalctl_args+=("_SYSTEMD_UNIT=$1") ;;
+	uid)
+		shift; journalctl_args+=("_UID=$1") ;;
+	pid)
+		shift; journalctl_args+=("_PID=$1") ;;
+esac
+
+[ "$dont_tail" = "1" ] || journalctl_args+=("-f")
+
+exec journalctl "${journalctl_args[@]}"
