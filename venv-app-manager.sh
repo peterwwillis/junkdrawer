@@ -34,7 +34,7 @@ VENV_OPT_FORCE=0
 ###############
 #### Functions
 
-_log () { printf "%s: Info: %s\n" "$SCRIPTNAME" "$*" ; }
+_info () { printf "%s: Info: %s\n" "$SCRIPTNAME" "$*" ; }
 _err () { printf "%s: Error: %s\n" "$SCRIPTNAME" "$*" 1>&2 ; }
 _errexit () { _err "$*" ; exit 1 ; }
 _tempfile () {
@@ -59,19 +59,19 @@ _venv_confload () {
     if [ -d "$VENV_CONFDIR" ] ; then
         if [ -n "$arg" ] ; then
 
-            if [ -d "$dir/venv/$arg" ] ; then
-                export VENV_SETUPDIR="$dir/venv/$arg"
+            if [ -d "$VENV_CONFDIR/venv/$arg" ] ; then
+                export VENV_SETUPDIR="$VENV_CONFDIR/venv/$arg"
 
-                if [ -e "$VENV_SETUPDIR/config" ] ; then
-                    _log "Found venv '$arg' setup config file '$VENV_SETUPDIR/config'; loading..."
-                    . "$VENV_SETUPDIR/config"
+                if [ -e "$VENV_SETUPDIR/config.sh" ] ; then
+                    _info "Found venv '$arg' setup config file '$VENV_SETUPDIR/config.sh'; loading..."
+                    . "$VENV_SETUPDIR/config.sh"
                 fi
             fi
 
         else
-            if [ -e "$dir/config" ] ; then
-                _log "Found config file '$dir/config'; loading..."
-                . "$dir/config"
+            if [ -e "$VENV_CONFDIR/config.sh" ] ; then
+                _info "Found config file '$VENV_CONFDIR/config.sh'; loading..."
+                . "$VENV_CONFDIR/config.sh"
             fi
         fi
     fi
@@ -96,6 +96,15 @@ _venv_prep () {
     mkdir -p "$VENV_CONFDIR"
 }
 _venv_install () {
+    local _auto_install=0
+    while getopts "a" arg ; do
+        case "$arg" in
+            a)          _auto_install=1 ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    [ $# -gt 0 ] || _errexit "You must pass arguments to this command"
     local venv_name="$1"
     export VENV_DIR="$VENV_BASEDIR/$venv_name"
 
@@ -112,17 +121,21 @@ _venv_install () {
     if declare -p PREINSTALL_SCRIPT 2>/dev/null 1>&2 ; then
         _runscript "$PREINSTALL_SCRIPT" || _errexit "Could not run PREINSTALL_SCRIPT! Exiting"
     fi
-    if [ -e "$VENV_SETUPDIR/preinstall.sh" ] ; then
+    if [ -n "${VENV_SETUPDIR:-}" ] && [ -e "$VENV_SETUPDIR/preinstall.sh" ] ; then
         bash "$VENV_SETUPDIR/preinstall.sh" || _errexit "Could not run preinstall.sh! Exiting"
     fi
 
     # Installing the venv!
     python3 -m venv "$VENV_DIR"
 
+    if [ "$_auto_install" = "1" ] ; then
+        "$VENV_DIR/bin/pip" install "$venv_name"
+    fi
+
     if declare -p PYTHON_REQUIRES 2>/dev/null 1>&2 ; then
         "$VENV_DIR/bin/pip" install "${PYTHON_REQUIRES[@]}"
 
-    elif [ -e "$VENV_SETUPDIR/requirements.txt" ] ; then
+    elif [ -n "${VENV_SETUPDIR:-}" ] && [ -e "$VENV_SETUPDIR/requirements.txt" ] ; then
         "$VENV_DIR/bin/pip" install -r "$VENV_SETUPDIR/requirements.txt"
     fi
 
@@ -132,25 +145,39 @@ _venv_install () {
     if declare -p POSTINSTALL_SCRIPT 2>/dev/null 1>&2 ; then
         _runscript "$POSTINSTALL_SCRIPT" || _errexit "Could not run POSTINSTALL_SCRIPT! Exiting"
     fi
-    if [ -e "$VENV_SETUPDIR/postinstall.sh" ] ; then
+    if [ -n "${VENV_SETUPDIR:-}" ] && [ -e "$VENV_SETUPDIR/postinstall.sh" ] ; then
         bash "$VENV_SETUPDIR/postinstall.sh" || _errexit "Could not run postinstall.sh! Exiting"
     fi
 }
 _venv_upgrade () {
+    local _auto_install=0
+    while getopts "a" arg ; do
+        case "$arg" in
+            a)          _auto_install=1 ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    [ $# -gt 0 ] || _errexit "You must pass arguments to this command"
     local venv_name="$1"
     export VENV_DIR="$VENV_BASEDIR/$venv_name"
 
     _venv_clearvar
     _venv_confload "$venv_name"
 
+    if [ "$_auto_install" = "1" ] ; then
+        "$VENV_DIR/bin/pip" install --upgrade "$venv_name"
+    fi
+
     if declare -p PYTHON_REQUIRES 2>/dev/null 1>&2 ; then
         "$VENV_DIR/bin/pip" install --upgrade "${PYTHON_REQUIRES[@]}"
 
-    elif [ -e "$VENV_SETUPDIR/requirements.txt" ] ; then
+    elif [ -n "${VENV_SETUPDIR:-}" ] && [ -e "$VENV_SETUPDIR/requirements.txt" ] ; then
         "$VENV_DIR/bin/pip" install --upgrade -r "$VENV_SETUPDIR/requirements.txt"
     fi
 }
 _venv_remove () {
+    [ $# -gt 0 ] || _errexit "You must pass arguments to this command"
     local venv_name="$1"
     export VENV_DIR="$VENV_BASEDIR/$venv_name"
 
@@ -194,18 +221,31 @@ Usage: $SCRIPTNAME COMMAND [ARG ..]
 Manages Python virtual environments for you.
 
 Commands:
-    install NAME            Installs a venv NAME
-    upgrade NAME            Upgrade the packages in venv NAME
+
+    install [OPTS] NAME     Installs a venv NAME.
+
+        Options:    -a      Auto-install package NAME in venv NAME
+
+    upgrade NAME            Upgrade the packages in venv NAME. Doesn't do
+                            anything by default unless you have configuration
+                            that specifies packages.
+
+        Options:    -a      Auto-upgrade package NAME in venv NAME
+
     remove NAME             Removes a venv NAME
+
     list                    Lists all installed venvs
-    shellenv                Prints some environment variables so you can make
-                            better use of the managed environments
+
+    shellenv                Prints your PATH plus the paths to the venv bin
+                            directories so you can find all the executables
+
 
 Config files specific to a venv 'NAME' can be saved in a directory
 called '$VENV_CONFDIR/venv/NAME'.
+
 In that directory you can keep the following files:
 
-    - config                A text file with the following variables:
+    - config.sh              A text file with the following variables:
                                 PREINSTALL
                                     A Bash array of commands to run before install
                                 PREINSTALL_SCRIPT
@@ -219,11 +259,8 @@ In that directory you can keep the following files:
                                 PYTHON_REQUIRES
                                     A Bash array of Python packages to install
                                     with pip
-
     - requirements.txt      A text file with Python packages to install with pip
-
     - preinstall.sh         A Bash script to run before install
-
     - postinstall.sh        A Bash script to run after install
 
 EOUSAGE
