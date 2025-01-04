@@ -186,6 +186,16 @@ or:
 </blockquote>
 
 
+## [dar-backup.sh](./dar-backup.sh) - generate a full and/or incremental backup using dar
+<blockquote>
+</blockquote>
+
+
+## [date-seconds-portable.sh](./date-seconds-portable.sh) - A portable implementation of 'date' output, given SECONDS
+<blockquote>
+</blockquote>
+
+
 ## [d-aws](./d-aws) - Run AWS CLI from Docker
 <blockquote>
 </blockquote>
@@ -197,21 +207,6 @@ or:
 
 
 ## [d-nr-cli](./d-nr-cli) - Run the NewRelic CLI from Docker
-<blockquote>
-</blockquote>
-
-
-## [d-terraform](./d-terraform) - Run Terraform CLI from Docker
-<blockquote>
-</blockquote>
-
-
-## [dar-backup.sh](./dar-backup.sh) - generate a full and/or incremental backup using dar
-<blockquote>
-</blockquote>
-
-
-## [date-seconds-portable.sh](./date-seconds-portable.sh) - A portable implementation of 'date' output, given SECONDS
 <blockquote>
 </blockquote>
 
@@ -278,6 +273,11 @@ and exports the sshd port to the local host.
 
 
 ## [download-tls-cert.sh](./download-tls-cert.sh) - Download TLS certificate from a host/port
+<blockquote>
+</blockquote>
+
+
+## [d-terraform](./d-terraform) - Run Terraform CLI from Docker
 <blockquote>
 </blockquote>
 
@@ -350,17 +350,17 @@ take different arguments and actually return both a username and password.
 </blockquote>
 
 
-## [git-clean-workdir.sh](./git-clean-workdir.sh) - Clean up temporary files in a Git working directory
-<blockquote>
-</blockquote>
-
-
 ## [git-clean.sh](./git-clean.sh) - Interactively remove unchecked-in Git working directory files
 <blockquote>
 </blockquote>
 
 
 ## [git-cleanup-local-stale.sh](./git-cleanup-local-stale.sh) - Remove any stale local and remote Git branches from local repository
+<blockquote>
+</blockquote>
+
+
+## [git-clean-workdir.sh](./git-clean-workdir.sh) - Clean up temporary files in a Git working directory
 <blockquote>
 </blockquote>
 
@@ -386,6 +386,36 @@ take different arguments and actually return both a username and password.
 
 
 ## [git-http-check-origin-exists.sh](./git-http-check-origin-exists.sh) - In case you want to use 'curl' to see if an HTTP(s) Git repo actually exists or not
+<blockquote>
+</blockquote>
+
+
+## [github-get-pr](./github-get-pr) - Get a pull request branch from GitHub
+<blockquote>
+</blockquote>
+
+
+## [github-get-restapi.sh](./github-get-restapi.sh) - Curl the GitHub API
+<blockquote>
+</blockquote>
+
+
+## [github-get-team-members.sh](./github-get-team-members.sh) - Use get-github-restapi.sh to get GitHub team members list
+<blockquote>
+</blockquote>
+
+
+## [github-get-team.sh](./github-get-team.sh) - Use get-github-restapi.sh to get GitHub teams list
+<blockquote>
+</blockquote>
+
+
+## [github-list-users.py](./github-list-users.py) - List GitHub users using 'github' Python library
+<blockquote>
+</blockquote>
+
+
+## [github-set-commit-build-status.sh](./github-set-commit-build-status.sh) - Set commit build status for a GitHub commit
 <blockquote>
 </blockquote>
 
@@ -442,36 +472,6 @@ From https://stackoverflow.com/a/25357146/3760330
 </blockquote>
 
 
-## [github-get-pr](./github-get-pr) - Get a pull request branch from GitHub
-<blockquote>
-</blockquote>
-
-
-## [github-get-restapi.sh](./github-get-restapi.sh) - Curl the GitHub API
-<blockquote>
-</blockquote>
-
-
-## [github-get-team-members.sh](./github-get-team-members.sh) - Use get-github-restapi.sh to get GitHub team members list
-<blockquote>
-</blockquote>
-
-
-## [github-get-team.sh](./github-get-team.sh) - Use get-github-restapi.sh to get GitHub teams list
-<blockquote>
-</blockquote>
-
-
-## [github-list-users.py](./github-list-users.py) - List GitHub users using 'github' Python library
-<blockquote>
-</blockquote>
-
-
-## [github-set-commit-build-status.sh](./github-set-commit-build-status.sh) - Set commit build status for a GitHub commit
-<blockquote>
-</blockquote>
-
-
 ## [gw](./gw) - A Terminal User Interface wrapper to make Git worktrees easier to manage
 <blockquote>
 </blockquote>
@@ -503,6 +503,11 @@ Example:
 
   $ JENKINS_SERVER_URL=https://foo.com/ \
       ./add-jenkins-credential.sh easi-github-token <redacted>
+</blockquote>
+
+
+## [jenkinsctl](./jenkinsctl) - a command-line wrapper around building and running a Jenkins instance
+<blockquote>
 </blockquote>
 
 
@@ -542,11 +547,6 @@ Sample groovy file:
 
 
 ## [jenkins-trigger-paramaterized-build.py](./jenkins-trigger-paramaterized-build.py) - Run a Jenkins parameterized build
-<blockquote>
-</blockquote>
-
-
-## [jenkinsctl](./jenkinsctl) - a command-line wrapper around building and running a Jenkins instance
 <blockquote>
 </blockquote>
 
@@ -602,12 +602,12 @@ does not exist in a namespace. Secret retrieval is parallelized with xargs.
 </blockquote>
 
 
-## [k8s-get-secret-values.sh](./k8s-get-secret-values.sh) - Output kubernetes secret keys and values in plaintext
+## [k8s-get-secrets-opaque.sh](./k8s-get-secrets-opaque.sh) - Get any 'Opaque' type k8s secrets
 <blockquote>
 </blockquote>
 
 
-## [k8s-get-secrets-opaque.sh](./k8s-get-secrets-opaque.sh) - Get any 'Opaque' type k8s secrets
+## [k8s-get-secret-values.sh](./k8s-get-secret-values.sh) - Output kubernetes secret keys and values in plaintext
 <blockquote>
 </blockquote>
 
@@ -678,6 +678,12 @@ original author: Dustin J. Mitchell <dustin@cs.uchicago.edu>
 
 ## [reset-ntp.sh](./reset-ntp.sh) - Update the time on a box using ntp
 <blockquote>
+</blockquote>
+
+
+## [setup-hibernate-ubuntu.sh](./setup-hibernate-ubuntu.sh) - Set up hibernation mode in Ubuntu
+<blockquote>
+
 </blockquote>
 
 
