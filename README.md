@@ -763,7 +763,7 @@ packages. This script helps you:
  - Add each venv bin/ directory to the end of your PATH so you can execute
    the installed apps easily
 
-So this is basically a very crappy, small package manager for Python.
+So this is basically a very crappy, small application manager for Python.
 (sigh.... not another one............ !!!)
 </blockquote>
 
