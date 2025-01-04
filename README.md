@@ -750,6 +750,24 @@ Options:
 </blockquote>
 
 
+## [venv-app-manager.sh](./venv-app-manager.sh) - Manages a set of Python venv applications for you
+<blockquote>
+
+Sometimes you may want to install a bunch of Python applications, but your
+system wants you to use a venv (virtual environment) to install Python
+packages. This script helps you:
+
+ - Create a venv for each app you want to install
+ - Run pip for you
+ - Run extra commands you can configure per-application
+ - Add each venv bin/ directory to the end of your PATH so you can execute
+   the installed apps easily
+
+So this is basically a very crappy, small package manager for Python.
+(sigh.... not another one............ !!!)
+</blockquote>
+
+
 ## [virtualenv](./virtualenv) - Run virtualenv, installing it if needed
 <blockquote>
 </blockquote>
