@@ -11,7 +11,7 @@
 #  - Add each venv bin/ directory to the end of your PATH so you can execute
 #    the installed apps easily
 #
-# So this is basically a very crappy, small package manager for Python.
+# So this is basically a very crappy, small application manager for Python.
 # (sigh.... not another one............ !!!)
 
 set -eu
@@ -97,9 +97,10 @@ _venv_prep () {
 }
 _venv_install () {
     local _auto_install=0
-    while getopts "a" arg ; do
+    while getopts "af" arg ; do
         case "$arg" in
             a)          _auto_install=1 ;;
+            f)          VENV_OPT_FORCE=1 ;;
         esac
     done
     shift $((OPTIND-1))
@@ -225,6 +226,7 @@ Commands:
     install [OPTS] NAME     Installs a venv NAME.
 
         Options:    -a      Auto-install package NAME in venv NAME
+                    -f      Force install even if NAME exists
 
     upgrade NAME            Upgrade the packages in venv NAME. Doesn't do
                             anything by default unless you have configuration
