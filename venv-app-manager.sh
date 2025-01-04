@@ -117,7 +117,7 @@ _venv_install () {
     _venv_confload "$venv_name"
 
     if declare -p PREINSTALL 2>/dev/null 1>&2 && [ ${#PREINSTALL[@]} -gt 0 ] ; then
-        bash -c "${PREINSTALL[@]}"
+        bash -c "${PREINSTALL[@]}" || _errexit "Could not run PREINSTALL! Exiting"
     fi
     if declare -p PREINSTALL_SCRIPT 2>/dev/null 1>&2 ; then
         _runscript "$PREINSTALL_SCRIPT" || _errexit "Could not run PREINSTALL_SCRIPT! Exiting"
