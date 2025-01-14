@@ -2,7 +2,7 @@
 # gw - A Terminal User Interface wrapper to make Git worktrees easier to manage
 
 #set -eu
-#[ "${DEBUG:-0}" = "1" ] && set -x
+[ "${DEBUG:-0}" = "1" ] && set -x
 
 #curdir="$(pwd)"
 #prefix="$(git rev-parse --show-prefix)"
@@ -14,9 +14,13 @@ declare -a worktree_list gw_commandlist
 DIALOG_ERROR=-1 DIALOG_OK=0 DIALOG_CANCEL=1 DIALOG_HELP=2
 DIALOG_ITEM_HELP=2 DIALOG_EXTRA=3 DIALOG_TIMEOUT=5 DIALOG_ESC=255
 
+SCRIPT="$(basename "$0")"
+
 gw_commandlist=(switch add convert remove list)
 
-_debug () { printf "%s: Debug: %s\n" "$0" "$*" 1>&2 ; }
+_die () { _err "$*" ; exit 1 ; }
+_err () { printf "%s: Error: %s\n" "$SCRIPT" "$*" ; }
+_debug () { printf "%s: Debug: %s\n" "$SCRIPT" "$*" 1>&2 ; }
 _errifnot () { if [ $1 -ne $2 ] ; then _debug "Error: return status $1" ; return 1 ; fi ; return 0 ; }
 
 _get_worktree_list () {
@@ -185,7 +189,8 @@ _gw_convert () {
     newdir="$(mktemp -d)"
     if cp -a -v ./.??* ./* "$newdir/" ; then
         rm -rfv ./.??* ./*
-        if mv -v "$newdir" "$branchname" ; then
+        mkdir -p "$gitroot/$(dirname "$branchname")"
+        if mv -v "$newdir" "$gitroot/$branchname" ; then
             echo "ORIGIN_WORKDIR=\"$gitroot/$branchname\"" > .gwrc
             cd "$branchname"
         fi
@@ -210,8 +215,10 @@ _gw_remove () {
         current="${worktree_list[$((c+1))]}"
         if [ "$branchname" = "$current" ] ; then
             curworkdir="${worktree_list[$c]}"
-        elif [ ! "$branchname" = "$current" ] && [ -z "${newworkdir:-}" ] ; then
+        elif [ ! "$branchname" = "$current" ] ; then
             newworkdir="${worktree_list[$c]}"
+        elif [ -n "${newworkdir:-}" ] ; then
+            break
         fi
         c=$((c+2))
     done
@@ -256,11 +263,17 @@ _gw_runcmd () {
     esac
 }
 
+_check_deps () {
+    for cmd in git dialog ; do
+        command -v "$cmd" >/dev/null || _die "Could not find command: $cmd"
+    done
+}
+
 _gw_usage () {
     cat <<EOUSAGE
 gw: Wrapper around 'git worktree'
 
-Usage: $0 [COMMAND]
+Usage: $SCRIPT [COMMAND]
 
 1. Keep a directory 'foo', and in that directory clone a Git repository, with the
    name of your main branch (so, 'foo/main').
@@ -295,6 +308,8 @@ EOUSAGE
 #set -x
 #_parse_git_remote_repo "https://foo:bar@github.com/someorg/somerepo.git"
 #_parse_git_remote_repo "gituser@github.com:someorg/somerepo.git"
+
+_check_deps
 
 if [ -r .gwrc ] ; then
     origin_workdir="$(env -i sh -c 'set -a; . ./.gwrc ; echo $ORIGIN_WORKDIR')"
