@@ -634,6 +634,14 @@ Run 'kd' and select a command, or select DEFAULT to always use the defaults.
 </blockquote>
 
 
+## [list-dupe-files.sh](./list-dupe-files.sh) - Find and list duplicate files
+<blockquote>
+
+Pass this script one or more files or directories, and it will print out
+the files that are duplicates. Uses md5sum for comparison.
+</blockquote>
+
+
 ## [load-vim-plugins.sh](./load-vim-plugins.sh) - Load VIM plugins
 <blockquote>
 </blockquote>
