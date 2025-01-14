@@ -2,27 +2,51 @@
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 
-declare -a args=()
+_run_rclone_bisync () {
+    local remote="$1"; shift
+    for dir in "${localdirs[@]}" ; do
+        rclone \
+                --verbose \
+                --progress \
+                bisync \
+                ./"$dir"/ \
+                "$remote":"$dir"/ \
+                    --fast-list \
+                    --resilient \
+                    --create-empty-src-dirs \
+                    --no-update-modtime \
+                    --metadata \
+                    --drive-use-trash=true \
+                    --drive-export-formats=ods,odt,odp \
+                    --drive-import-formats=ods,odt,odp \
+                    "${rcloneargs[@]}"
+    done
+}
 
-for i in "$@" ; do
-    if [ "$i" = "--resync" ] ; then
-        args+=("--resync")
-    fi
-done
+_run_rclone_remotes () {
+    for remote in "${remotes[@]}" ; do
+        _run_rclone_bisync "$remote"
+    done
+}
 
-for i in Documents Media ; do
+# Extra args to rclone.
+# To add based on your system and version of rclone:
+#   --fix-case
+#   --slow-hash-sync-only
+declare -a rcloneargs=()
 
-    rclone \
-        bisync \
-        ./"$i"/ \
-        googledrive:"$i"/ \
-            --create-empty-src-dirs \
-            --compare size,modtime,checksum \
-            --slow-hash-sync-only \
-            --resilient \
-            -MvP \
-            --fix-case \
-            --drive-import-formats docx,odt \
-            "${args[@]}"
+# RClone Remotes must start with 'home-'
+declare -a remotes=( $( rclone listremotes | sed -E 's/:$//g' | grep '^home-' ) )
 
-done
+declare -a localdirs=( Documents ) # Media Music Pictures )
+
+while getopts "hR" args ; do
+    case "$args" in
+        h)        _usage ;;
+        R)        rcloneargs+=("--resync") ;;
+        *)        echo "$0: Error: invalid args '$args'" ; exit 1 ;;
+    esac    
+done                
+shift $((OPTIND-1))
+
+_run_rclone_remotes
