@@ -16,59 +16,69 @@ set -eu
 
 SA_TERRAFORM="${SA_TERRAFORM:-terraform}"
 
-declare -A changes=() colorlesschanges=() tochange=()
+declare -A changes=() changetypes=() colorlesschanges=() tochange=()
 
 _errexit () { printf "$0: $*" 1>&2 ; exit 1 ; }
 _identify_changes () {
     local file="$1"; shift
-    local stage=0 resource='' applytype=''
-    declare -a content=() colorlesscontent=()
-    while IFS= read -r line ; do
-        colorlessline="$(printf "%s\n" "$line" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2};?)?)?[mGK]//g")"
-        regex1='^  # (.+) will be (.+)$'
+    local stage=0 resource='' applytype='' colorlessfilecontent
+    declare -a colorlesscontent=()
+
+    colorlessfilecontent="$( cat "$file" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2};?)?)?[mGK]//g" )"
+
+    echo "$0: Identifying terraform changes in file '$file' ..."
+
+    while IFS= read -r colorlessline ; do
+
+        regex1='^[[:space:]]+# (.+) (will|must) be ([a-zA-Z0-9_-]+)'
         if [[ $colorlessline =~ $regex1 ]] ; then
             resource="${BASH_REMATCH[1]}"
-            applytype="${BASH_REMATCH[2]}"
+            applytype="${BASH_REMATCH[3]}"
             stage=1
+            [ $__opt_verbose -eq 0 ] || echo "$0: Detected resource '$resource', applytype '$applytype'"
+
         elif [ $stage -eq 1 ] ; then
-            if [ "$line" = "" ] ; then
-                changes["$resource"]="${content[@]}"
+            if [ "$colorlessline" = "" ] ; then
+                changes["$resource"]="${colorlesscontent[@]}"
                 colorlesschanges["$resource"]="${colorlesscontent[@]}"
-                content=()
+                changetypes["$resource"]="$applytype"
                 colorlesscontent=()
                 stage=0
             else
-                content+=("$line"$'\n') # Add newline to end of each entry
                 colorlesscontent+=("$colorlessline"$'\n') # Add newline to end of each entry
             fi
         fi
-    done < "$file"
+    done <<< "$colorlessfilecontent"
 }
 
 _prompt_dialog () {
     for resource in "${!colorlesschanges[@]}" ; do
-        outtext="
+        if [ ! "${changetypes[$resource]}" = "read" ] ; then
+            outtext="
 Resource:    $resource
 
 ${colorlesschanges[$resource]}
 "
-        if dialog --no-collapse --yesno "$outtext" 0 0 ; then # yes!
-            tochange[$resource]="1"
+            if dialog --no-collapse --yesno "$outtext" 0 0 ; then # yes!
+                tochange[$resource]="1"
+            fi
         fi
     done
 }
 
 _prompt_text () {
     for resource in "${!changes[@]}" ; do
-        echo ""
-        echo "$0: Resource to be changed: $resource"
-        echo ""
-        echo "$0: Changes proposed:"
-        echo "${changes[$resource]}"
-        echo ""
-        read -r -p "$0: Target this resource? [y/N] " answer
-        if [ "$answer" = "y" ] ; then
-            tochange[$resource]="1"
+        if [ ! "${changetypes[$resource]}" = "read" ] ; then
+            echo ""
+            echo "$0: Resource to be changed: $resource"
+            echo ""
+            echo "$0: Changes proposed:"
+            echo "${changes[$resource]}"
+            echo ""
+            read -r -p "$0: Target this resource? [y/N] " answer
+            if [ "$answer" = "y" ] ; then
+                tochange[$resource]="1"
+            fi
         fi
     done
 
@@ -87,7 +97,6 @@ _main () {
         rm -f "$tmplogfile"
     else
         for f in "$@" ; do
-            echo "$0: Parsing log file '$f' ..."
             _identify_changes "$f"
         done
     fi
@@ -148,17 +157,19 @@ Options:
   -T            Terraformsh mode. Sets USE_PLANFILE=0 and SA_TERRAFORM=terraformsh
   -N            Dry-run mode.
   -h            This output
+  -v            Verbose mode
 
 EOUSAGE
     exit 1
 }
 
-__opt_terraformsh=0 __opt_dryrun=0
-while getopts "hTN" args ; do
+__opt_terraformsh=0 __opt_dryrun=0 __opt_verbose=0
+while getopts "hTNv" args ; do
     case $args in
         h)  _usage ;;
         T)  __opt_terraformsh=1 ;;
         N)  __opt_dryrun=1 ;;
+        v)  __opt_verbose=1 ;;
         *)  _errexit "Please pass correct _mktemp options" ;;
     esac
 done
