@@ -76,6 +76,19 @@ It's part of a bootstrap process, or when a new application is added.
 </blockquote>
 
 
+## [aws-ec2-instanceconnect-run-ssh.sh](./aws-ec2-instanceconnect-run-ssh.sh) - Uses AWS EC2 Instance Connect to run commands on multiple hosts
+<blockquote>
+
+This script helps you run arbitrary commands on EC2 instances that support Instance Connect.
+
+Since the 'ec2-instance-connect ssh' command does not support SSH options (booooo!)
+there's a second mode here ('-L' option) that will push an SSH public key of
+your choice to the server and then SSH to it (you can pass SSH_OPTS to provide custom
+ssh command options).
+
+</blockquote>
+
+
 ## [aws-ec2-list-all-vpcs.sh](./aws-ec2-list-all-vpcs.sh) - Lists all AWS VPCs in all regions.
 <blockquote>
 
@@ -771,15 +784,8 @@ Options:
 ## [terraform-target-apply.sh](./terraform-target-apply.sh) - select which terraform changes to apply
 <blockquote>
 
-This script will run a 'terraform plan', look for changing resources,
-and prompt you for which of them you want to apply. It will then run a
-plan using -targets for each resource, and then apply that plan file.
-
-You can also pass a log file of output from Terraform, so you can
-skip the initial plan run.
-
-You can also use a dry-run to step through the prompts and output the
-Terraform commands that would do what you want.
+Uses 'terraform plan' output to detect changing resources, prompt a
+user which they want to apply, and apply them with -target option.
 </blockquote>
 
 
