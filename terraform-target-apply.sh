@@ -1,20 +1,13 @@
 #!/usr/bin/env bash
 # terraform-target-apply.sh - select which terraform changes to apply
 #
-# This script will run a 'terraform plan', look for changing resources,
-# and prompt you for which of them you want to apply. It will then run a
-# plan using -targets for each resource, and then apply that plan file.
-#
-# You can also pass a log file of output from Terraform, so you can
-# skip the initial plan run.
-#
-# You can also use a dry-run to step through the prompts and output the
-# Terraform commands that would do what you want.
+# Uses 'terraform plan' output to detect changing resources, prompt a
+# user which they want to apply, and apply them with -target option.
 
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 
-SA_TERRAFORM="${SA_TERRAFORM:-terraform}"
+TERRAFORM_TA_BIN="${TERRAFORM_TA_BIN:-terraform}"
 
 declare -A changes=() changetypes=() colorlesschanges=() tochange=()
 
@@ -92,7 +85,7 @@ _main () {
         echo "$0: No log file passed; running a Terraform plan to collect changes..."
         echo ""
         tmplogfile="$(mktemp)"
-        $SA_TERRAFORM plan | tee "$tmplogfile"
+        $TERRAFORM_TA_BIN plan | tee "$tmplogfile"
         _identify_changes "$tmplogfile"
         rm -f "$tmplogfile"
     else
@@ -126,11 +119,11 @@ _main () {
     set -x
     tmpplanfile="$(mktemp)"
     if [ $__opt_dryrun -eq 1 ] ; then
-        echo + $SA_TERRAFORM plan "${tf_opts[@]}" -out="$tmpplanfile"
-        echo + $SA_TERRAFORM apply "$tmpplanfile"
+        echo + $TERRAFORM_TA_BIN plan "${tf_opts[@]}" -out="$tmpplanfile"
+        echo + $TERRAFORM_TA_BIN apply "$tmpplanfile"
     else
-        $SA_TERRAFORM plan "${tf_opts[@]}" -out="$tmpplanfile"
-        $SA_TERRAFORM apply "$tmpplanfile"
+        $TERRAFORM_TA_BIN plan "${tf_opts[@]}" -out="$tmpplanfile"
+        $TERRAFORM_TA_BIN apply "$tmpplanfile"
     fi
     rm -f "$tmpplanfile"
     set +x
@@ -140,21 +133,23 @@ _usage () {
     cat <<EOUSAGE
 Usage: $0 [OPTIONS] [LOGFILE [..]]
 
-Takes a Terraform output log file, scans it for changing resources,
-prompts the user which of the target resources they want to apply,
-and then runs Terraform to apply those specific changes.
+This script does the following:
+
+ 1. Takes a Terraform output log file, or barring that, runs 
+    'terraform plan' and collects log output from that.
+ 2. Scans log output for changing resources.
+ 3. Prompts the user which resources they want to apply.
+ 4. Runs Terraform with -target option to apply those specific changes.
 
 LOGFILE is the output of a 'terraform plan'. It can include colored
-output or not.
+output or not. If you do not pass LOGFILE, runs 'terraform plan' in the
+current directory to generate output to look through.
 
-If you do not pass LOGFILE, runs 'terraform plan' in the current
-directory to generate output to look through.
-
-Pass environment variable SA_TERRAFORM to specify the command to
+Pass environment variable TERRAFORM_TA_BIN to specify the command to
 use for Terraform (default: 'terraform').
 
 Options:
-  -T            Terraformsh mode. Sets USE_PLANFILE=0 and SA_TERRAFORM=terraformsh
+  -T            Terraformsh mode. Sets USE_PLANFILE=0 and TERRAFORM_TA_BIN=terraformsh
   -N            Dry-run mode.
   -h            This output
   -v            Verbose mode
@@ -176,7 +171,7 @@ done
 shift $(($OPTIND-1))
 
 if [ $__opt_terraformsh -eq 1 ] ; then
-    export USE_PLANFILE=0 SA_TERRAFORM="terraformsh"
+    export USE_PLANFILE=0 TERRAFORM_TA_BIN="terraformsh"
 fi
 
 _main "$@"
