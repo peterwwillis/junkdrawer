@@ -40,30 +40,32 @@ sub process_backend {
     );
 
     my $handle_start = sub {
-        my ($self, $one, $two, $three, $four, $five) = @_;
-        print STDERR "Starting block $one\n";
-        #print STDERR "One $one two $two three $three four $four five $five\n";
+        my ($self, $word1, $quotwords1, $rsname, $four, $five) = @_;
+        print STDERR "  Starting block $word1\n";
+        print STDERR "    word1 '$word1' quotwords1 '$quotwords1' rsname '$rsname' four '$four' five '$five'\n";
         $self->{start_tf_block} = 1;
         $self->{new_block}++;
-        $self->{block_name} = $one;
-        if (defined $two) {
-            my $tmp = $two;
+        $self->{block_name} = $word1;
+        if (defined $quotwords1) {
+            my $tmp = $quotwords1;
             my @list;
+            # Trying changing \s+ to \s+? to handle 'module' blocks
             while ( $tmp =~ s/^"([^"]+)"\s+// ) {
                 push @list, $1;
             }
-            print STDERR "block_args $self->{block_args}\n";
             $self->{block_args} = [ @list ];
+            print STDERR "      block_args (@{$self->{block_args}})\n";
         }
     };
 
     my $handle_end = sub {
         my ($self) = @_;
-        print STDERR "Ending block $self->{block_name}\n";
+        print STDERR "  Examining block end\n";
         $self->{new_block}--;
 
         if ( $self->{new_block} == 0 ) {
 
+            print STDERR "    Ending block $self->{block_name}\n";
             $self->{start_tf_block} = 0;
 
             push( @{$self->{block_list}}, {
@@ -78,7 +80,7 @@ sub process_backend {
 
     for ( @$data ) {
 
-        print STDERR "LINE: '$_' start_tf_block $state{start_tf_block} new_block $state{new_block}\n";
+        print STDERR "        Data: '$_'\n        start_tf_block $state{start_tf_block} new_block $state{new_block}\n";
 
         if ( $state{start_tf_block} == 0 ) {
             if ( /^\s*(\w+)\s+(("[\w_-]+"\s+){0,})(\s*=\s*)?\{\s*(\})?\s*$/ ) {
@@ -93,11 +95,11 @@ sub process_backend {
         }
 
         elsif ( $state{start_tf_block} ) {
-            if ( /{\s*$/ ) {
+            if ( ! /^\s*#/ && /{\s*$/ ) {
                 $state{new_block}++;
             }
 
-            print STDERR "adding '$_' to entry\n";
+            print STDERR "            adding Data entry\n";
             push @{$state{entry}}, $_;
 
              # allow other chars after the '}', for example in a variable def with '})'
