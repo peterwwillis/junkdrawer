@@ -53,7 +53,7 @@ _get_worktree_list () {
 _gw_switch () {
     local prefix prefixdir
     prefix="$(git rev-parse --show-prefix)"
-    local execlist worktree_list c tmpfile result ret current prompttxt
+    local execlist worktree_list c tmpfile result current prompttxt
     local branchname
     branchname="$(git rev-parse --abbrev-ref HEAD)"
     prompttxt="$(printf "%s\n" "Select a worktree branch to change current directory to." "" "Current branch is indicated with an asterisk.")"
@@ -95,7 +95,7 @@ _gw_add () {
     local gitroot branchname
     gitroot="$(git rev-parse --show-toplevel)" || return 1
     branchname="$(git rev-parse --abbrev-ref HEAD)" || return 1
-    local execlist result=() path ret args formdesc
+    local execlist result=() path args formdesc
     formdesc="$(printf "%s\n" \
         "Specify the following to add a new git worktree:" \
         "  1) 'Create new branch?' - put 'y' to create a new branch, and fill out the 'New branch' section." \
@@ -132,34 +132,61 @@ _gw_add () {
 }
 
 _gw_convert () {
-    local execlist=() gitroot branchname newdir prompttxt
+    local execlist=() gitroot branchname newdir prompttxt dest dest_parent top_component
     gitroot="$(git rev-parse --show-toplevel)" || return 1
     branchname="$(git rev-parse --abbrev-ref HEAD)" || return 1
+    dest="$gitroot/$branchname"
+    dest_parent="$(dirname "$dest")"
+    top_component="${branchname%%/*}"
     if [ -e "$(dirname "$gitroot")/.gwrc" ] ; then
-        _debug "Parent is already a gw directory! Should be no need to convert"
+        _debug "Parent is already a gw directory; conversion likely unnecessary"
+        return 1
+    fi
+    if [ -e "$dest" ] ; then
+        _debug "Destination '$dest' already exists; aborting convert"
         return 1
     fi
     prompttxt="$( printf "%s\n" \
         "Repository: $gitroot" \
         "Remote:" "$(git remote -v)" \
         "" \
-        "New work directory will be '$gitroot/$branchname'." \
+        "Will create branch directory: $dest" \
+        "'convert' copies ALL files (tracked, untracked, ignored) including .git into a new directory," \
+        "then removes originals from the parent, leaving only branch directories + .gwrc." \
         "" \
         "Continue?" )"
     execlist=(dialog --title "Convert this repository to a worktree subdirectory" --yesno "$prompttxt" 0 0)
     "${execlist[@]}"
     _errifnot $? $DIALOG_OK || return 1
-    newdir="$(mktemp -d)"
-    if cp -a -v ./.??* ./* "$newdir/" ; then
-        rm -rfv ./.??* ./*
-        mkdir -p "$gitroot/$(dirname "$branchname")"
-        if mv -v "$newdir" "$gitroot/$branchname" ; then
-            echo "ORIGIN_WORKDIR=\"$gitroot/$branchname\"" > .gwrc
-            cd "$branchname" || return 1
+    newdir="$(mktemp -d)" || { _debug "Failed to allocate temp dir"; return 1; }
+    # Copy phase: include hidden and regular entries (except . and ..). Use dotglob/nullglob safely.
+    (
+        shopt -s dotglob nullglob
+        local items=(*)
+        if [ ${#items[@]} -eq 0 ] ; then
+            _debug "Nothing to copy? (Empty directory)"; exit 1
         fi
-    else
-        _debug "Error while copying repo files to '$newdir/'"
+        cp -a "${items[@]}" "$newdir/" || exit 1
+    ) || { _debug "Copy phase failed"; return 1; }
+    # Create destination parent path (supports branch names with slashes)
+    mkdir -p "$dest_parent" || { _debug "Failed to create parent '$dest_parent'"; return 1; }
+    # Move the copied snapshot into its final branch directory
+    if ! mv "$newdir" "$dest" ; then
+        _debug "Move of '$newdir' to '$dest' failed"
+        return 1
     fi
+    # Write/overwrite .gwrc at parent to mark origin workdir
+    echo "ORIGIN_WORKDIR=\"$dest\"" > .gwrc || _debug "Failed writing .gwrc"
+    # Remove original items from root EXCEPT the branch top component (and .gwrc we just wrote)
+    (
+        shopt -s dotglob nullglob
+        for f in *; do
+            [ "$f" = "$top_component" ] && continue
+            [ "$f" = ".gwrc" ] && continue
+            rm -rf -- "$f"
+        done
+    )
+    cd "$branchname" || _debug "Converted but failed to cd into branch dir '$branchname'"
 }
 
 _gw_remove () {
