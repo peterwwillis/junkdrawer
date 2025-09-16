@@ -71,17 +71,23 @@ _bigprint () {
 
 _run_cmds_ic_ssh () {
     local command
-    if [ $# -gt 0 ] ; then
-        command="$*"
-    else
-        command="$( _get_cmd_stdin )"
+    if [ ! "${no_command:-0}" = "1" ] ; then
+        if [ $# -gt 0 ] ; then
+            command="$*"
+        else
+            command="$( _get_cmd_stdin )"
+        fi
     fi
     _get_inst_ids
     for inst_id in "${inst_ids_a[@]}" ; do
         _bigprint "Connecting to instance $inst_id"
         set +e
-        printf "%s\nexit\n" "$command" | \
+        if [ -n "${command:-}" ] ; then
+            printf "%s\nexit\n" "$command" | \
+                aws ec2-instance-connect ssh --instance-id "$inst_id" --os-user "$os_user" --no-cli-pager
+        else
             aws ec2-instance-connect ssh --instance-id "$inst_id" --os-user "$os_user" --no-cli-pager
+        fi
         ret=$?
         set -e
         if [ $ret -ne 0 ] ; then
@@ -93,10 +99,12 @@ _run_cmds_ic_ssh () {
 
 _run_cmds_local_key () {
     local command ssh_public_key proxy_command vpc_id endpoint
-    if [ $# -gt 0 ] ; then
-        command="$*"
-    else
-        command="$( _get_cmd_stdin )"
+    if [ ! "${no_command:-0}" = "1" ] ; then
+        if [ $# -gt 0 ] ; then
+            command="$*"
+        else
+            command="$( _get_cmd_stdin )"
+        fi
     fi
     ssh_public_key="$( _find_ssh_public_key )"
     if [ -z "$ssh_public_key" ] ; then
@@ -119,7 +127,7 @@ _run_cmds_local_key () {
             if [ -n "${aws_ec2_ic_endpoint:-}" ]; then
                 endpoint="$aws_ec2_ic_endpoint"
             elif [ -n "$endpoint_ids" ]; then
-                endpoint="$(printf '%s\n' $endpoint_ids | head -n1)"
+                endpoint="$(printf '%s\n' "$endpoint_ids" | head -n1)"
             fi
             proxy_command="aws ec2-instance-connect open-tunnel --local-port 0 --instance-id %h"
             if [ -n "$endpoint" ] ; then
@@ -128,10 +136,14 @@ _run_cmds_local_key () {
 
             set +e
             _bigprint "Making SSH connection to $inst_id via endpoint '${endpoint:-public}'"
-            ssh ${SSH_OPTS:-} -o ProxyCommand="$proxy_command" "$os_user@$inst_id" <<EOF
+            if [ -n "${command:-}" ] ; then
+                ssh ${SSH_OPTS:-} -o ProxyCommand="$proxy_command" "$os_user@$inst_id" <<EOF
 $command
 exit \$?
 EOF
+            else
+                ssh ${SSH_OPTS:-} -o ProxyCommand="$proxy_command" "$os_user@$inst_id"
+            fi
             ret=$?
             set -e
             if [ $ret -ne 0 ] ; then
@@ -160,7 +172,8 @@ Pass the AWS_REGION environment variable to change the region.
 
 If you do not pass a COMMAND, defaults to using the standard-input
 to this script as the COMMAND to run. The COMMAND is anything that a
-shell can execute.
+shell can execute. If you pass -N, no COMMAND is needed and interactive
+mode is attempted.
 
 If you use -L option, you can pass environment variable SSH_OPTS,
 which are more options for the 'ssh' command.
@@ -175,17 +188,18 @@ Options:
   -E ENDPOINT       Use given EC2 IC endpoint ID
   -l                List AWS EC2 Instance Connect endpoints
   -i                List AWS EC2 instance IDs
+  -N                Do not run a command, try interactive mode instead
   -h                Help
 EOUSAGE
     exit 1
 }
 
-use_local_key=0 list_aws_ic_e=0 list_aws_instid=0
+use_local_key=0 list_aws_ic_e=0 list_aws_instid=0 no_command=0
 ssh_public_key_file='' aws_ec2_ic_endpoint='' aws_inst_ids=''
 declare -a inst_ids_a=()
 declare -A vpc_map=() endpoints_map=() failed_insts=()
 
-while getopts "U:F:Q:I:Llik:E:h" args ; do
+while getopts "U:F:Q:I:LliNk:E:h" args ; do
     case $args in
         U)  os_user="$OPTARG" ;;
         F)  inst_id_filters="$OPTARG" ;;
@@ -194,9 +208,9 @@ while getopts "U:F:Q:I:Llik:E:h" args ; do
         L)  use_local_key=1 ;;
         l)  list_aws_ic_e=1 ;;
         i)  list_aws_instid=1 ;;
+        N)  no_command=1 ;;
         k)  ssh_public_key_file="$OPTARG" ;;
         E)  aws_ec2_ic_endpoint="$OPTARG" ;;
-        h)  _usage ;;
         *)  _usage ;;
     esac
 done
