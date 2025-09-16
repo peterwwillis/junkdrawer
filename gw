@@ -14,6 +14,15 @@ declare -a worktree_list gw_commandlist
 
 DIALOG_ERROR=-1 DIALOG_OK=0 DIALOG_CANCEL=1 DIALOG_HELP=2
 DIALOG_ITEM_HELP=2 DIALOG_EXTRA=3 DIALOG_TIMEOUT=5 DIALOG_ESC=255
+# Dialog exit/status codes reference (only DIALOG_OK currently used in logic):
+#   DIALOG_OK=0          User accepted (e.g. chose menu item / answered Yes)
+#   DIALOG_CANCEL=1      User pressed Cancel
+#   DIALOG_HELP=2        Help button (not wired here)
+#   DIALOG_ITEM_HELP=2   (Alias) Item help code
+#   DIALOG_EXTRA=3       Extra button (unused)
+#   DIALOG_TIMEOUT=5     Timed out (unused)
+#   DIALOG_ESC=255       ESC pressed (unused)
+# Keeping them: clarifies potential future branching without scattering magic numbers.
 
 SCRIPT="$(basename "$0")"
 
@@ -42,10 +51,11 @@ _get_worktree_list () {
 ## _set_repo_vars, _gw_clone) to keep file lean. Reintroduce if future features need them.
 
 _gw_switch () {
-    # shellcheck disable=SC2155
-    local prefix="$(git rev-parse --show-prefix)" prefixdir
+    local prefix prefixdir
+    prefix="$(git rev-parse --show-prefix)"
     local execlist worktree_list c tmpfile result ret current prompttxt
-    local branchname="$(git rev-parse --abbrev-ref HEAD)"
+    local branchname
+    branchname="$(git rev-parse --abbrev-ref HEAD)"
     prompttxt="$(printf "%s\n" "Select a worktree branch to change current directory to." "" "Current branch is indicated with an asterisk.")"
     execlist=(dialog --title "Worktree switch" --menu "$prompttxt" 0 0 0 -1 "(DEFAULT)")
     _get_worktree_list
@@ -82,8 +92,9 @@ _gw_switch () {
 }
 
 _gw_add () {
-    local gitroot="$(git rev-parse --show-toplevel)"
-    local branchname="$(git rev-parse --abbrev-ref HEAD)"
+    local gitroot branchname
+    gitroot="$(git rev-parse --show-toplevel)" || return 1
+    branchname="$(git rev-parse --abbrev-ref HEAD)" || return 1
     local execlist result=() path ret args formdesc
     formdesc="$(printf "%s\n" \
         "Specify the following to add a new git worktree:" \
@@ -103,7 +114,7 @@ _gw_add () {
         _debug "No origin branch name" ; return 1
     fi
     args=(git worktree add)
-    if [ "${result[0]:-}" = "y" -o "${result[0]:-}" = "Y" ] ; then
+    if [ "${result[0]:-}" = "y" ] || [ "${result[0]:-}" = "Y" ] ; then
         if [ -z "${result[2]}" ] ; then
             _debug "No new branch name" ; return 1
         fi
@@ -116,14 +127,14 @@ _gw_add () {
     echo "+ ${args[*]}"
     if "${args[@]}" ; then
         echo "+ cd '$path'"
-        cd "$path"
+        cd "$path" || return
     fi
 }
 
 _gw_convert () {
     local execlist=() gitroot branchname newdir prompttxt
-    gitroot="$(git rev-parse --show-toplevel)"
-    branchname="$(git rev-parse --abbrev-ref HEAD)"
+    gitroot="$(git rev-parse --show-toplevel)" || return 1
+    branchname="$(git rev-parse --abbrev-ref HEAD)" || return 1
     if [ -e "$(dirname "$gitroot")/.gwrc" ] ; then
         _debug "Parent is already a gw directory! Should be no need to convert"
         return 1
@@ -144,7 +155,7 @@ _gw_convert () {
         mkdir -p "$gitroot/$(dirname "$branchname")"
         if mv -v "$newdir" "$gitroot/$branchname" ; then
             echo "ORIGIN_WORKDIR=\"$gitroot/$branchname\"" > .gwrc
-            cd "$branchname"
+            cd "$branchname" || return 1
         fi
     else
         _debug "Error while copying repo files to '$newdir/'"
@@ -185,7 +196,7 @@ _gw_list () {
 }
 
 _gw () {
-    local execlist=() options=() c=0 result ret prompttxt gitroot
+    local execlist=() c=0 result prompttxt gitroot
     gitroot="$(git rev-parse --show-toplevel)"
     prompttxt="$(printf "%s\n" "Repository: $gitroot" "" "Select a wrapper command")"
     execlist=(dialog --title "Git Worktree wrapper" --menu "$prompttxt" 0 0 0 -1 "(NONE)")
@@ -263,7 +274,7 @@ _check_deps
 if [ -r .gwrc ] ; then
     origin_workdir="$(env -i sh -c 'set -a; . ./.gwrc ; echo $ORIGIN_WORKDIR')"
     _debug "Found .gwrc; moving to origin worktree '$origin_workdir'"
-    cd "$origin_workdir"
+    cd "$origin_workdir" || _debug "Failed to cd to origin worktree '$origin_workdir'"
 fi
 
 if ! git rev-parse 2>/dev/null ; then _debug "Current directory is not a Git work tree" ; return 1 ; fi
