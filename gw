@@ -12,9 +12,9 @@ set -o pipefail
 declare -a worktree_list gw_commandlist
 # worktree_list stores pairs: path branch path branch ... (Bash 3.x friendly)
 
-DIALOG_ERROR=-1 DIALOG_OK=0 DIALOG_CANCEL=1 DIALOG_HELP=2
-DIALOG_ITEM_HELP=2 DIALOG_EXTRA=3 DIALOG_TIMEOUT=5 DIALOG_ESC=255
+DIALOG_OK=0
 # Dialog exit/status codes reference (only DIALOG_OK currently used in logic):
+#   DIALOG_ERROR=-1      Error from dialog
 #   DIALOG_OK=0          User accepted (e.g. chose menu item / answered Yes)
 #   DIALOG_CANCEL=1      User pressed Cancel
 #   DIALOG_HELP=2        Help button (not wired here)
@@ -31,7 +31,7 @@ gw_commandlist=(switch add convert remove list)
 _die () { _err "$*" ; exit 1 ; }
 _err () { printf "%s: Error: %s\n" "$SCRIPT" "$*" ; }
 _debug () { printf "%s: Debug: %s\n" "$SCRIPT" "$*" 1>&2 ; }
-_errifnot () { if [ $1 -ne $2 ] ; then _debug "Error: return status $1" ; return 1 ; fi ; return 0 ; }
+_errifnot () { if [ "$1" -ne "$2" ] ; then _debug "Error: return status $1" ; return 1 ; fi ; return 0 ; }
 
 _get_worktree_list () {
     local wt='' branch=''
