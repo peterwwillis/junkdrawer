@@ -22,7 +22,6 @@ DIALOG_OK=0
 #   DIALOG_EXTRA=3       Extra button (unused)
 #   DIALOG_TIMEOUT=5     Timed out (unused)
 #   DIALOG_ESC=255       ESC pressed (unused)
-# Keeping them: clarifies potential future branching without scattering magic numbers.
 
 SCRIPT="$(basename "$0")"
 
@@ -191,31 +190,19 @@ _gw_add () {
     fi
 }
 
+# Convert a single-branch repo into a worktree-compatible layout.
+# Moves all files into a new subdirectory named for the current branch.
+# After conversion, the original root contains only branch directories + .gwrc.
+# Requires user confirmation; aborts if destination exists or parent already has .gwrc.
 _gw_convert () {
-    # Algorithm (layout conversion):
-    #   Preconditions:
-    #     * Run inside the original single-branch repo root (contains .git).
-    #     * Current branch name becomes the directory name holding original contents.
-    #   Steps:
-    #     1. Determine destination directory: $gitroot/$branchname (may include path components).
-    #     2. Confirm via dialog; abort if destination exists or parent already has .gwrc.
-    #     3. Copy ALL entries (tracked, untracked, ignored, including .git) into a temp dir.
-    #     4. Create parent path for destination (supports branch names with slashes).
-    #     5. Move temp dir into place at destination.
-    #     6. Write .gwrc with ORIGIN_WORKDIR=dest (anchors original main branch directory).
-    #     7. Remove everything from original root EXCEPT the new top-level branch directory and .gwrc.
-    #     8. cd into the branch directory so subsequent commands operate there.
-    #   Notes:
-    #     * After completion the repository “root” no longer contains .git; the real .git lives in branch dir.
-    #     * Removal step intentionally leaves only the branch hierarchy + .gwrc for a clean worktree hub.
-    #     * Fail-fast on copy or move errors; original root left intact if failure occurs before removal phase.
-
     local execlist=() gitroot branchname newdir prompttxt dest dest_parent top_component
     gitroot="$(git rev-parse --show-toplevel)" || return 1
     branchname="$(git rev-parse --abbrev-ref HEAD)" || return 1
     dest="$gitroot/$branchname"
     dest_parent="$(dirname "$dest")"
     top_component="${branchname%%/*}"
+
+    # Preconditions
     if [ -e "$(dirname "$gitroot")/.gwrc" ] ; then
         _debug "Parent is already a gw directory; conversion likely unnecessary"
         return 1
@@ -224,6 +211,8 @@ _gw_convert () {
         _debug "Destination '$dest' already exists; aborting convert"
         return 1
     fi
+
+    # Confirm with user
     prompttxt="$( printf "%s\n" \
         "Repository: $gitroot" \
         "Remote:" "$(git remote -v)" \
@@ -236,7 +225,10 @@ _gw_convert () {
     execlist=(dialog --title "Convert this repository to a worktree subdirectory" --yesno "$prompttxt" 0 0)
     "${execlist[@]}"
     _errifnot $? $DIALOG_OK || return 1
+
+    # Create temporary directory for copying files
     newdir="$(mktemp -d)" || { _debug "Failed to allocate temp dir"; return 1; }
+
     # Copy phase: include hidden and regular entries (except . and ..). Use dotglob/nullglob safely.
     (
         shopt -s dotglob nullglob
@@ -246,15 +238,19 @@ _gw_convert () {
         fi
         cp -a "${items[@]}" "$newdir/" || exit 1
     ) || { _debug "Copy phase failed"; return 1; }
+
     # Create destination parent path (supports branch names with slashes)
     mkdir -p "$dest_parent" || { _debug "Failed to create parent '$dest_parent'"; return 1; }
+
     # Move the copied snapshot into its final branch directory
     if ! mv "$newdir" "$dest" ; then
         _debug "Move of '$newdir' to '$dest' failed"
         return 1
     fi
+
     # Write/overwrite .gwrc at parent to mark origin workdir
     echo "ORIGIN_WORKDIR=\"$dest\"" > .gwrc || _debug "Failed writing .gwrc"
+
     # Remove original items from root EXCEPT the branch top component (and .gwrc we just wrote)
     (
         shopt -s dotglob nullglob
@@ -267,9 +263,8 @@ _gw_convert () {
     cd "$branchname" || _debug "Converted but failed to cd into branch dir '$branchname'"
 }
 
-# Remove the current worktree after switching to an alternate
+# Remove the currently checked-out worktree (by branch) after switching to a fallback.
 _gw_remove () {
-    # Remove the currently checked-out worktree (by branch) after switching to a fallback.
     # Strategy:
     #   1. Collect current worktree path and first alternate path.
     #   2. Confirm user intent.
@@ -319,8 +314,8 @@ _gw_remove () {
     git worktree remove "$cur_path"
 }
 
+# Show a simple dialog listing current worktrees; handle empty edge case.
 _gw_list () {
-    # Show a simple dialog listing current worktrees; handle empty edge case.
     local list
     if ! list="$(git worktree list -v 2>/dev/null)" ; then
         dialog --title "Worktree list" --msgbox "(Error running 'git worktree list')" 0 0
@@ -333,9 +328,9 @@ _gw_list () {
     dialog --title "Worktree list" --msgbox "$list" -1 -1
 }
 
+# Main interactive menu for selecting a subcommand.
+# Builds a numeric menu of entries in gw_commandlist, runs chosen command.
 _gw () {
-    # Main interactive menu for selecting a subcommand.
-    # Builds a numeric menu of entries in gw_commandlist, runs chosen command.
     local prompt gitroot
     gitroot="$(git rev-parse --show-toplevel)" || return 1
     prompt="$(printf "%s\n" "Repository: $gitroot" "" "Select a wrapper command")"
@@ -360,6 +355,7 @@ _gw () {
     _gw_runcmd "${gw_commandlist[$selection]}"
 }
 
+# Run a specific command (non-interactive mode)
 _gw_runcmd () {
     case "$1" in
         -h|--help)  _gw_usage ;;
@@ -372,6 +368,7 @@ _gw_runcmd () {
     esac
 }
 
+# Check for required dependencies
 _check_deps () {
     for cmd in git dialog ; do
         command -v "$cmd" >/dev/null || _die "Could not find command: $cmd"
@@ -414,18 +411,21 @@ EOUSAGE
     return 1
 }
 
-## (Removed obsolete commented testing lines.)
-
 _check_deps
 
+# If .gwrc exists in current directory, source it to get ORIGIN_WORKDIR and cd there.
 if [ -r .gwrc ] ; then
     origin_workdir="$(env -i sh -c 'set -a; . ./.gwrc ; echo $ORIGIN_WORKDIR')"
     _debug "Found .gwrc; moving to origin worktree '$origin_workdir'"
     cd "$origin_workdir" || _debug "Failed to cd to origin worktree '$origin_workdir'"
 fi
 
-if ! git rev-parse 2>/dev/null ; then _debug "Current directory is not a Git work tree" ; return 1 ; fi
+if ! git rev-parse 2>/dev/null ; then
+    _debug "Current directory is not a Git work tree"
+    return 1
+fi
 
+# If no args, run interactive menu; else run specified command.
 if [ $# -lt 1 ] ; then
     _gw
 else
