@@ -397,16 +397,18 @@ _gw_usage () {
     cat <<EOUSAGE
 gw: Bash wrapper around 'git worktree'
 
-Usage: . $SCRIPT [COMMAND]
+(Source this script into your shell with: \`source $SCRIPT\` ;
+ then use the \`gw\` command)
 
-(The leading dot is required to source this script into your current shell,
-so that commands like 'switch' can change your current directory.)
+Usage: gw [COMMAND]
 
 1. Keep a directory 'foo', and in that directory clone a Git repository, with the
    name of your main branch (so, 'foo/main').
-2. Change to that directory and run '. gw' (if 'gw' is in your path, this will find
+
+2. Change to that directory and run 'gw' (if 'gw' is in your path, this will find
    'gw' and load it into your shell, which will enable it to change the current
    directory of your shell).
+
 3. You can then select a command to run and the wrapper will make it easier to use.
 
 Commands:
@@ -432,24 +434,30 @@ EOUSAGE
     return 1
 }
 
-_check_deps
 
-# If .gwrc exists in current directory, source it to get ORIGIN_WORKDIR and cd there.
-if [ -r .gwrc ] ; then
-    # shellcheck disable=SC2016  # We intentionally use single quotes to prevent expansion in this shell; subshell handles it.
-    origin_workdir="$(env -i sh -c 'set -a; . ./.gwrc ; echo $ORIGIN_WORKDIR')"
-    _debug "Found .gwrc; moving to origin worktree '$origin_workdir'"
-    cd "$origin_workdir" || _debug "Failed to cd to origin worktree '$origin_workdir'"
-fi
+# Run the 'gw' command after sourcing into your shell
+gw () {
 
-if ! git rev-parse 2>/dev/null ; then
-    _debug "Current directory is not a Git work tree"
-    return 1
-fi
+    _check_deps
 
-# If no args, run interactive menu; else run specified command.
-if [ $# -lt 1 ] ; then
-    _gw
-else
-    _gw_runcmd "$@"
-fi
+    # If .gwrc exists in current directory, source it to get ORIGIN_WORKDIR and cd there.
+    if [ -r .gwrc ] ; then
+        # shellcheck disable=SC2016  # We intentionally use single quotes to prevent expansion in this shell; subshell handles it.
+        origin_workdir="$(env -i sh -c 'set -a; . ./.gwrc ; echo $ORIGIN_WORKDIR')"
+        _debug "Found .gwrc; moving to origin worktree '$origin_workdir'"
+        cd "$origin_workdir" || _debug "Failed to cd to origin worktree '$origin_workdir'"
+    fi
+
+    if ! git rev-parse 2>/dev/null ; then
+        _debug "Current directory is not a Git work tree"
+        return 1
+    fi
+
+    # If no args, run interactive menu; else run specified command.
+    if [ $# -lt 1 ] ; then
+        _gw
+    else
+        _gw_runcmd "$@"
+    fi
+
+}
