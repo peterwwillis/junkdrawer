@@ -395,9 +395,12 @@ _check_deps () {
 
 _gw_usage () {
     cat <<EOUSAGE
-gw: Wrapper around 'git worktree'
+gw: Bash wrapper around 'git worktree'
 
-Usage: $SCRIPT [COMMAND]
+Usage: . $SCRIPT [COMMAND]
+
+(The leading dot is required to source this script into your current shell,
+so that commands like 'switch' can change your current directory.)
 
 1. Keep a directory 'foo', and in that directory clone a Git repository, with the
    name of your main branch (so, 'foo/main').
