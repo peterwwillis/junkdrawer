@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # gw - A Terminal User Interface wrapper to make Git worktrees easier to manage
 
-#set -eu
-[ "${DEBUG:-0}" = "1" ] && set -x
-
-# NOTE:
-# We intentionally do NOT set -e here because dialog-driven control flow relies
+# NOTE: We intentionally do NOT set -e here because dialog-driven control flow relies
 # on inspecting exit codes (e.g. cancel vs OK). We add pipefail for safer pipes.
 set -o pipefail
+[ "${DEBUG:-0}" = "1" ] && set -x
 
 declare -a worktree_list gw_commandlist
 # worktree_list stores pairs: path branch path branch ... (Bash 3.x friendly)
@@ -47,7 +44,7 @@ _get_worktree_list () {
             continue
         fi
         # Split line into key value (value may contain spaces, but porcelain keys here don't)
-        set -- $line
+        set -- "$line"
         case "$1" in
             worktree) wt="$2" ;;
             branch)   branch="${2##refs/heads/}" ;;
@@ -74,7 +71,8 @@ _gw_switch () {
     fi
 
     # Build dialog menu args
-    local prompt="$(printf "%s\n" \
+    local prompt
+    prompt="$(printf "%s\n" \
         "Select a worktree branch to change current directory to." \
         "" \
         "Current branch is indicated with an asterisk.")"
@@ -344,10 +342,12 @@ _gw () {
     done
 
     # Show menu and get selection
-    local tmpfile="$(mktemp)" || return 1
+    local tmpfile
+    tmpfile="$(mktemp)" || return 1
     "${menu[@]}" 2>"$tmpfile"
     _errifnot $? $DIALOG_OK || { rm -f "$tmpfile"; return 1; }
-    local selection="$(cat "$tmpfile")"
+    local selection
+    selection="$(cat "$tmpfile")"
     rm -f "$tmpfile"
     [ "$selection" = "-1" ] && return 0
 
@@ -415,6 +415,7 @@ _check_deps
 
 # If .gwrc exists in current directory, source it to get ORIGIN_WORKDIR and cd there.
 if [ -r .gwrc ] ; then
+    # shellcheck disable=SC2016  # We intentionally use single quotes to prevent expansion in this shell; subshell handles it.
     origin_workdir="$(env -i sh -c 'set -a; . ./.gwrc ; echo $ORIGIN_WORKDIR')"
     _debug "Found .gwrc; moving to origin worktree '$origin_workdir'"
     cd "$origin_workdir" || _debug "Failed to cd to origin worktree '$origin_workdir'"
