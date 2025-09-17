@@ -34,104 +34,182 @@ _debug () { printf "%s: Debug: %s\n" "$SCRIPT" "$*" 1>&2 ; }
 _errifnot () { if [ "$1" -ne "$2" ] ; then _debug "Error: return status $1" ; return 1 ; fi ; return 0 ; }
 
 _get_worktree_list () {
+    # Populate global worktree_list with (path branch) pairs using git porcelain format.
+    # Format chunks end with a blank line. We only append when BOTH path & branch captured.
+    worktree_list=()
     local wt='' branch=''
-    while read -r -a entry ; do
-        if [ "${entry[0]}" = "worktree" ] ; then
-            wt="${entry[1]}"
-        elif [ "${entry[0]}" = "branch" ] ; then
-            branch="${entry[1]##refs/heads/}"
-        elif [ -z "${entry[0]}" ] ; then
-            worktree_list+=("$wt" "$branch")
+    while IFS= read -r line; do
+        # Blank line ends a record
+        if [ -z "$line" ]; then
+            if [ -n "$wt" ] && [ -n "$branch" ]; then
+                worktree_list+=("$wt" "$branch")
+            fi
             wt='' branch=''
+            continue
         fi
+        # Split line into key value (value may contain spaces, but porcelain keys here don't)
+        set -- $line
+        case "$1" in
+            worktree) wt="$2" ;;
+            branch)   branch="${2##refs/heads/}" ;;
+            *)        ;; # ignore other keys (e.g., bare, locked, prunable)
+        esac
     done < <(git worktree list --porcelain)
-}
-
-## Removed unused helpers (_map_entries, _set_default_vars, _parse_git_remote_repo,
-## _set_repo_vars, _gw_clone) to keep file lean. Reintroduce if future features need them.
-
-_gw_switch () {
-    local prefix prefixdir
-    prefix="$(git rev-parse --show-prefix)"
-    local execlist worktree_list c tmpfile result current prompttxt
-    local branchname
-    branchname="$(git rev-parse --abbrev-ref HEAD)"
-    prompttxt="$(printf "%s\n" "Select a worktree branch to change current directory to." "" "Current branch is indicated with an asterisk.")"
-    execlist=(dialog --title "Worktree switch" --menu "$prompttxt" 0 0 0 -1 "(DEFAULT)")
-    _get_worktree_list
-    c=0; while [ $c -lt ${#worktree_list[@]} ] ; do
-        current="${worktree_list[$((c+1))]}"
-        if [ "$branchname" = "$current" ] ; then
-            current="* $current"
-        else
-            current="  $current"
-        fi
-        execlist+=("$c" "$current")
-        c=$((c+2))
-    done
-    tmpfile="$(mktemp)"
-    "${execlist[@]}" 2>"$tmpfile"
-    _errifnot $? $DIALOG_OK || return 1
-    result="$(cat "$tmpfile")"
-    rm -f "$tmpfile"
-    [ "$result" = "-1" ] && return
-    if [ -d "${worktree_list[$result]}" ] ; then
-        echo "+ cd '${worktree_list[$result]}'"
-        prefixdir="${old_worktree_prefix:-$prefix}"
-        if [ ! -d "${worktree_list[$result]}/$prefixdir" ] ; then
-            _debug "Could not find '$prefixdir' in worktree dir '${worktree_list[$result]}'; going to git root instead"
-            old_worktree_prefix="$prefixdir"
-            cd "${worktree_list[$result]}" || _debug "Could not cd to '${worktree_list[$result]}'"
-        else
-            unset old_worktree_prefix
-            cd "${worktree_list[$result]}/$prefixdir" || _debug "Could not cd to '${worktree_list[$result]}/$prefixdir'"
-        fi
-    else
-        _debug "No such directory '${worktree_list[$result]}'"
+    # Handle case where file does not end with newline
+    if [ -n "$wt" ] && [ -n "$branch" ]; then
+        worktree_list+=("$wt" "$branch")
     fi
 }
 
+# Get list of worktrees, prompt the user which one they want to enter,
+# and then change to that directory
+_gw_switch () {
+    local repo_prefix current_branch
+    repo_prefix="$(git rev-parse --show-prefix)"
+    current_branch="$(git rev-parse --abbrev-ref HEAD)"
+
+    _get_worktree_list
+    if [ ${#worktree_list[@]} -eq 0 ]; then
+        _debug "No worktrees found"
+        return 1
+    fi
+
+    # Build dialog menu args
+    local prompt="$(printf "%s\n" \
+        "Select a worktree branch to change current directory to." \
+        "" \
+        "Current branch is indicated with an asterisk.")"
+    local menu=(dialog --title "Worktree switch" --menu "$prompt" 0 0 0 -1 "(DEFAULT)")
+    local i=0 label target_dir target_branch
+    for ((i=0; i<${#worktree_list[@]}; i+=2)); do
+        target_dir="${worktree_list[i]}"; target_branch="${worktree_list[i+1]}"
+        if [ "$current_branch" = "$target_branch" ]; then
+            label="* $target_branch"
+        else
+            label="  $target_branch"
+        fi
+        menu+=("$i" "$label")
+    done
+
+    # Show menu and get selection
+    local tmpfile selection old_worktree_prefix
+    tmpfile="$(mktemp)" || return 1
+    "${menu[@]}" 2>"$tmpfile"
+    _errifnot $? $DIALOG_OK || { rm -f "$tmpfile"; return 1; }
+    selection="$(cat "$tmpfile")"; rm -f "$tmpfile"
+    [ "$selection" = "-1" ] && return 0
+
+    # Change to selected worktree directory
+    target_dir="${worktree_list[selection]}"
+    if [ ! -d "$target_dir" ]; then
+        _debug "No such directory '$target_dir'"
+        return 1
+    fi
+    echo "+ cd '$target_dir'"
+
+    # If we have a prefix from previous worktree, try to cd into it if it exists.
+    local prefixdir
+    prefixdir="${old_worktree_prefix:-$repo_prefix}"
+    if [ -n "$prefixdir" ] && [ -d "$target_dir/$prefixdir" ]; then
+        unset old_worktree_prefix
+        cd "$target_dir/$prefixdir" || _debug "Could not cd to '$target_dir/$prefixdir'"
+    else
+        if [ -n "$prefixdir" ] && [ ! -d "$target_dir/$prefixdir" ]; then
+            _debug "Could not find '$prefixdir' in '$target_dir'; using repo root"
+            old_worktree_prefix="$prefixdir"
+        fi
+        cd "$target_dir" || _debug "Could not cd to '$target_dir'"
+    fi
+}
+
+# Add a new worktree, optionally creating a new branch
 _gw_add () {
-    local gitroot branchname
+    local gitroot current_branch
     gitroot="$(git rev-parse --show-toplevel)" || return 1
-    branchname="$(git rev-parse --abbrev-ref HEAD)" || return 1
-    local execlist result=() path args formdesc
+    current_branch="$(git rev-parse --abbrev-ref HEAD)" || return 1
+
+    # Dialog form collects three fields (newline separated in tmp file):
+    #   0 -> create flag (y/n)
+    #   1 -> origin branch (base branch or existing branch)
+    #   2 -> new branch name (iff create flag = y)
+    local formdesc
     formdesc="$(printf "%s\n" \
         "Specify the following to add a new git worktree:" \
         "  1) 'Create new branch?' - put 'y' to create a new branch, and fill out the 'New branch' section." \
         "  2) 'Origin branch' - If not creating a new branch, this is the branch to use. If creating a new branch, this is the origin branch used to start a new branch." \
         "  3) 'New branch' - The new branch name, if created.")"
-    execlist=(dialog --title "Add a new worktree" --form "$formdesc" 0 0 0 \
+
+    local execlist=(
+        dialog --title "Add a new worktree" --form "$formdesc" 0 0 0 \
             "Create new branch (y/n)" 1 1 "y" 1 25 30 0 \
-            "Origin branch" 2 1 "$branchname" 2 25 99 0 \
-            "New branch" 3 1 "" 3 25 99 0)
-    tmpfile="$(mktemp)"
+            "Origin branch" 2 1 "$current_branch" 2 25 99 0 \
+            "New branch" 3 1 "" 3 25 99 0
+    )
+
+    # Execute dialog and capture results
+    local tmpfile create_flag origin_branch new_branch path
+    local -a result=() args=()
+    tmpfile="$(mktemp)" || return 1
     "${execlist[@]}" 2>"$tmpfile"
-    _errifnot $? $DIALOG_OK || return 1
-    IFS=$'\n' read -r -d '' -a result <"$tmpfile"
+    _errifnot $? $DIALOG_OK || { rm -f "$tmpfile"; return 1; }
+
+    # Read newline-separated fields into result array
+    IFS=$'\n' read -r -a result <"$tmpfile"
     rm -f "$tmpfile"
-    if [ -z "${result[1]}" ] ; then
-        _debug "No origin branch name" ; return 1
+
+    # Parse results
+    create_flag="${result[0]:-}"    # y / n
+    origin_branch="${result[1]:-}"   # existing branch or base
+    new_branch="${result[2]:-}"      # new branch name (if create)
+    if [ -z "$origin_branch" ]; then
+        _debug "No origin branch name"; return 1
     fi
+
+    # Build the git worktree add command
     args=(git worktree add)
-    if [ "${result[0]:-}" = "y" ] || [ "${result[0]:-}" = "Y" ] ; then
-        if [ -z "${result[2]}" ] ; then
-            _debug "No new branch name" ; return 1
-        fi
-        path="$(dirname "$gitroot")/${result[2]}"
-        args+=("-b" "${result[2]}" "$path" "${result[1]}")
-    else
-        path="$(dirname "$gitroot")/${result[1]}"
-        args+=("$path" "${result[1]}")
-    fi
+    local parent_dir
+    parent_dir="$(dirname "$gitroot")"
+    case "$create_flag" in
+        y|Y)
+            if [ -z "$new_branch" ]; then
+                _debug "No new branch name"; return 1
+            fi
+            path="$parent_dir/$new_branch"
+            args+=("-b" "$new_branch" "$path" "$origin_branch")
+            ;;
+        *)
+            path="$parent_dir/$origin_branch"
+            args+=("$path" "$origin_branch")
+            ;;
+    esac
     echo "+ ${args[*]}"
+
+    # Execute the git worktree add command
     if "${args[@]}" ; then
         echo "+ cd '$path'"
-        cd "$path" || return
+        cd "$path" || return 1
     fi
 }
 
 _gw_convert () {
+    # Algorithm (layout conversion):
+    #   Preconditions:
+    #     * Run inside the original single-branch repo root (contains .git).
+    #     * Current branch name becomes the directory name holding original contents.
+    #   Steps:
+    #     1. Determine destination directory: $gitroot/$branchname (may include path components).
+    #     2. Confirm via dialog; abort if destination exists or parent already has .gwrc.
+    #     3. Copy ALL entries (tracked, untracked, ignored, including .git) into a temp dir.
+    #     4. Create parent path for destination (supports branch names with slashes).
+    #     5. Move temp dir into place at destination.
+    #     6. Write .gwrc with ORIGIN_WORKDIR=dest (anchors original main branch directory).
+    #     7. Remove everything from original root EXCEPT the new top-level branch directory and .gwrc.
+    #     8. cd into the branch directory so subsequent commands operate there.
+    #   Notes:
+    #     * After completion the repository “root” no longer contains .git; the real .git lives in branch dir.
+    #     * Removal step intentionally leaves only the branch hierarchy + .gwrc for a clean worktree hub.
+    #     * Fail-fast on copy or move errors; original root left intact if failure occurs before removal phase.
+
     local execlist=() gitroot branchname newdir prompttxt dest dest_parent top_component
     gitroot="$(git rev-parse --show-toplevel)" || return 1
     branchname="$(git rev-parse --abbrev-ref HEAD)" || return 1
@@ -189,55 +267,97 @@ _gw_convert () {
     cd "$branchname" || _debug "Converted but failed to cd into branch dir '$branchname'"
 }
 
+# Remove the current worktree after switching to an alternate
 _gw_remove () {
-    local execlist=() gitroot branchname prompttxt curworkdir newworkdir
+    # Remove the currently checked-out worktree (by branch) after switching to a fallback.
+    # Strategy:
+    #   1. Collect current worktree path and first alternate path.
+    #   2. Confirm user intent.
+    #   3. cd into alternate path (so removal isn't performed inside target).
+    #   4. Run `git worktree remove` on the current worktree path.
+
+    local execlist=() gitroot branchname prompttxt cur_path alt_path
     gitroot="$(git rev-parse --show-toplevel)" || return 1
     branchname="$(git rev-parse --abbrev-ref HEAD)" || return 1
-    prompttxt="$( printf "%s\n" \
-        "Repository: $gitroot" \
-        "Remote:" "$(git remote -v)" \
-        "" \
-        "Remove worktree '$branchname' ?" )"
     _get_worktree_list
-    # Walk pair array once: record current worktree path and the first alternative.
+    if [ ${#worktree_list[@]} -lt 2 ]; then
+        _debug "No worktree entries found"; return 1
+    fi
+
+    # Scan pair list: path branch
     local i path branch
     for ((i=0; i<${#worktree_list[@]}; i+=2)); do
         path="${worktree_list[i]}"; branch="${worktree_list[i+1]}"
         if [ "$branch" = "$branchname" ]; then
-            curworkdir="$path"
-        elif [ -z "${newworkdir:-}" ]; then
-            newworkdir="$path"
+            cur_path="$path"
+        elif [ -z "${alt_path:-}" ]; then
+            alt_path="$path"
         fi
     done
-    if [ -z "${curworkdir:-}" ]; then _debug "Current worktree path not found"; return 1; fi
-    if [ -z "${newworkdir:-}" ]; then _debug "No alternate worktree to switch into before removal"; return 1; fi
+    if [ -z "${cur_path:-}" ]; then _debug "Could not find current worktree path"; return 1; fi
+    if [ -z "${alt_path:-}" ]; then _debug "Refusing to remove the only remaining worktree"; return 1; fi
+
+    # Confirm with user
+    prompttxt="$( printf "%s\n" \
+        "Repository: $gitroot" \
+        "Remote:" "$(git remote -v)" \
+        "" \
+        "Current worktree path: $cur_path" \
+        "Switching to:        $alt_path" \
+        "" \
+        "Remove worktree for branch '$branchname'?" )"
     execlist=(dialog --title "Remove worktree" --yesno "$prompttxt" 0 0)
     "${execlist[@]}"
+
+    # Check the result
     _errifnot $? $DIALOG_OK || return 1
-    cd "$newworkdir" || { _debug "Failed to cd to '$newworkdir'"; return 1; }
-    git worktree remove "$curworkdir"
+
+    # Switch to alternate worktree
+    cd "$alt_path" || { _debug "Failed to cd to '$alt_path'"; return 1; }
+
+    # Finally, remove the current worktree
+    git worktree remove "$cur_path"
 }
 
 _gw_list () {
-    dialog --title "Worktree list" --msgbox "$(git worktree list -v)" -1 -1
+    # Show a simple dialog listing current worktrees; handle empty edge case.
+    local list
+    if ! list="$(git worktree list -v 2>/dev/null)" ; then
+        dialog --title "Worktree list" --msgbox "(Error running 'git worktree list')" 0 0
+        return 1
+    fi
+    if [ -z "$list" ]; then
+        dialog --title "Worktree list" --msgbox "No worktrees found." 0 0
+        return 0
+    fi
+    dialog --title "Worktree list" --msgbox "$list" -1 -1
 }
 
 _gw () {
-    local execlist=() c=0 result prompttxt gitroot
-    gitroot="$(git rev-parse --show-toplevel)"
-    prompttxt="$(printf "%s\n" "Repository: $gitroot" "" "Select a wrapper command")"
-    execlist=(dialog --title "Git Worktree wrapper" --menu "$prompttxt" 0 0 0 -1 "(NONE)")
-    for cmd in "${gw_commandlist[@]}" ; do
-        execlist+=("$c" "$cmd")
-        c=$((c+1))
+    # Main interactive menu for selecting a subcommand.
+    # Builds a numeric menu of entries in gw_commandlist, runs chosen command.
+    local prompt gitroot
+    gitroot="$(git rev-parse --show-toplevel)" || return 1
+    prompt="$(printf "%s\n" "Repository: $gitroot" "" "Select a wrapper command")"
+    
+    # Build menu args
+    local menu=() idx=0
+    menu=(dialog --title "Git Worktree wrapper" --menu "$prompt" 0 0 0 -1 "(NONE)")
+    for cmd in "${gw_commandlist[@]}"; do
+        menu+=("$idx" "$cmd")
+        idx=$((idx+1))
     done
-    tmpfile="$(mktemp)"
-    "${execlist[@]}" 2>"$tmpfile"
-    _errifnot $? $DIALOG_OK || return 1
-    result="$(cat "$tmpfile")"
+
+    # Show menu and get selection
+    local tmpfile="$(mktemp)" || return 1
+    "${menu[@]}" 2>"$tmpfile"
+    _errifnot $? $DIALOG_OK || { rm -f "$tmpfile"; return 1; }
+    local selection="$(cat "$tmpfile")"
     rm -f "$tmpfile"
-    [ "$result" = "-1" ] && return
-    _gw_runcmd "${gw_commandlist[$result]}"
+    [ "$selection" = "-1" ] && return 0
+
+    # Run the selected command
+    _gw_runcmd "${gw_commandlist[$selection]}"
 }
 
 _gw_runcmd () {
