@@ -31,9 +31,11 @@ _errifnot () { if [ "$1" -ne "$2" ] ; then _debug "Error: return status $1" ; re
 
 _get_worktree_list () {
     # Populate global worktree_list with (path branch) pairs using git porcelain format.
-    # Format chunks end with a blank line. We only append when BOTH path & branch captured.
+    # We parse only 'worktree' and 'branch' lines; a blank line terminates an entry.
     worktree_list=()
-    local wt='' branch=''
+    local wt='' branch='' line
+
+    # Read git worktree list output line-by-line
     while IFS= read -r line; do
         # Blank line ends a record
         if [ -z "$line" ]; then
@@ -43,15 +45,24 @@ _get_worktree_list () {
             wt='' branch=''
             continue
         fi
-        # Split line into key value (value may contain spaces, but porcelain keys here don't)
-        set -- "$line"
-        case "$1" in
-            worktree) wt="$2" ;;
-            branch)   branch="${2##refs/heads/}" ;;
-            *)        ;; # ignore other keys (e.g., bare, locked, prunable)
+        case "$line" in
+            worktree\ *)
+                # Everything after the first space is the path (may contain spaces)
+                wt="${line#worktree }"
+                ;;
+            branch\ refs/heads/*)
+                branch="${line#branch refs/heads/}"
+                ;;
+            branch\ *)
+                branch="${line#branch }"
+                ;;
+            *)
+                : # ignore other keys
+                ;;
         esac
     done < <(git worktree list --porcelain)
-    # Handle case where file does not end with newline
+
+    # Handle case where output does not end with newline
     if [ -n "$wt" ] && [ -n "$branch" ]; then
         worktree_list+=("$wt" "$branch")
     fi
@@ -150,8 +161,15 @@ _gw_add () {
     "${execlist[@]}" 2>"$tmpfile"
     _errifnot $? $DIALOG_OK || { rm -f "$tmpfile"; return 1; }
 
-    # Read newline-separated fields into result array
-    IFS=$'\n' read -r -a result <"$tmpfile"
+    # Read newline-separated fields into result array.
+    # Previous code used: IFS=$'\n' read -r -a result <"$tmpfile"
+    # That only reads ONE line (the first) into the array, leaving origin/new branch empty.
+    # We need to read all lines; avoid readarray for wider Bash compatibility.
+    while IFS= read -r line; do
+        # Skip possible trailing empty line
+        [ -z "$line" ] && continue
+        result+=("$line")
+    done <"$tmpfile"
     rm -f "$tmpfile"
 
     # Parse results
@@ -159,7 +177,7 @@ _gw_add () {
     origin_branch="${result[1]:-}"   # existing branch or base
     new_branch="${result[2]:-}"      # new branch name (if create)
     if [ -z "$origin_branch" ]; then
-        _debug "No origin branch name"; return 1
+        _debug "No origin branch name (dialog form parse error?)"; return 1
     fi
 
     # Build the git worktree add command
