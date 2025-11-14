@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# git-export-commits.sh - export range of Git commits as compressed tarball
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 
@@ -51,6 +52,17 @@ if [ -z "$end_commit" ] ; then
     fi
 fi
 
+if git rev-parse "${start_commit}^" >/dev/null 2>&1; then
+    # start_commit has a parent; A^..B includes A
+    range="${start_commit}^..${end_commit}"
+    root_flag=
+else
+    # start_commit is a root; parent doesn’t exist, so use --root and no left side
+    range="${end_commit}"
+    root_flag="--root"
+fi
+
+
 if [ -z "$start_commit" ] || [ -z "$end_commit" ] ; then
     _die "Error: need to specify both start and end commit (or -f and/or -l)"
 fi
@@ -62,6 +74,6 @@ tmpdir="$(mktemp -d)"
 cd "$src_git_repo"
 # The ^ is necessary to include the commit specified by START_COMMIT
 #git format-patch -o "$tmpdir" "$start_commit"^.."$end_commit"
-git format-patch -o "$tmpdir" "$start_commit".."$end_commit"
+git format-patch $root_flag -o "$tmpdir" "$range"
 tar -C "$tmpdir" -cf - . | gzip -9 > "$output_file"
 rm -rf "$tmpdir"
