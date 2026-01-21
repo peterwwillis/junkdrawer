@@ -374,7 +374,7 @@ _gw_remove () {
 
 # Show a simple dialog listing current worktrees; handle empty edge case.
 _gw_list () {
-    local list
+    local list tmpfile
     if ! list="$(git worktree list -v 2>/dev/null)" ; then
         dialog --title "Worktree list" --msgbox "(Error running 'git worktree list')" 0 0
         return 1
@@ -383,7 +383,10 @@ _gw_list () {
         dialog --title "Worktree list" --msgbox "No worktrees found." 0 0
         return 0
     fi
-    dialog --title "Worktree list" --msgbox "$list" -1 -1
+    tmpfile="$(mktemp)" || return 1
+    echo "$list" > "$tmpfile"
+    dialog --title "Worktree list" --textbox "$tmpfile" 0 0
+    rm -f "$tmpfile"
 }
 
 # Main interactive menu for selecting a subcommand.
