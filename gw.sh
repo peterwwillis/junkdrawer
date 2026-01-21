@@ -9,6 +9,10 @@ set -o pipefail
 declare -a worktree_list gw_commandlist
 # worktree_list stores pairs: path branch path branch ... (Bash 3.x friendly)
 
+# GW_SORT_MODE controls how the switch list is sorted
+# Values: "default" (git's order) or "date" (by last commit date, newest first)
+GW_SORT_MODE="${GW_SORT_MODE:-default}"
+
 DIALOG_OK=0
 # Dialog exit/status codes reference (only DIALOG_OK currently used in logic):
 #   DIALOG_ERROR=-1      Error from dialog
@@ -81,14 +85,48 @@ _gw_switch () {
         return 1
     fi
 
+    # Sort worktree list by commit date if requested
+    if [ "$GW_SORT_MODE" = "date" ]; then
+        local -a sorted_list=() dates_paths=()
+        local i path branch commit_date timestamp
+        
+        # Collect dates with timestamps for sorting
+        for ((i=0; i<${#worktree_list[@]}; i+=2)); do
+            path="${worktree_list[i]}"
+            branch="${worktree_list[i+1]}"
+            timestamp="$(git -C "$path" log -1 --format=%ct 2>/dev/null || echo '0')"
+            dates_paths+=("$timestamp|$path|$branch")
+        done
+        
+        # Sort by timestamp (newest first) and rebuild worktree_list
+        worktree_list=()
+        while IFS='|' read -r ts path branch; do
+            worktree_list+=("$path" "$branch")
+        done < <(printf '%s\n' "${dates_paths[@]}" | sort -t'|' -k1,1rn)
+    fi
+
     # Build dialog menu args
     local prompt
     prompt="$(printf "%s\n" \
         "Select a worktree branch to change current directory to." \
         "" \
         "Current branch is indicated with an asterisk.")"
-    local menu=(dialog --title "Worktree switch" --menu "$prompt" 0 0 0 -1 "(DEFAULT)")
-    local i=0 label target_dir target_branch commit_date
+    
+    # First pass: find max branch name length
+    local i=0 max_len=0 target_branch
+    for ((i=0; i<${#worktree_list[@]}; i+=2)); do
+        target_branch="${worktree_list[i+1]}"
+        [ ${#target_branch} -gt $max_len ] && max_len=${#target_branch}
+    done
+    
+    # Build menu with aligned DEFAULT entry
+    local default_label padding
+    padding=$((max_len - 7))  # 9 = length of "(DEFAULT)", minus 2 due to column structure
+    printf -v default_label "(DEFAULT)%*s  YYYY-MM-DD" $padding ""
+    local menu=(dialog --title "Worktree switch" --menu "$prompt" 0 0 0 -1 "$default_label")
+    
+    # Second pass: build menu with aligned dates
+    local label target_dir commit_date
     for ((i=0; i<${#worktree_list[@]}; i+=2)); do
         target_dir="${worktree_list[i]}"; target_branch="${worktree_list[i+1]}"
         commit_date="$(git -C "$target_dir" log -1 --format=%cd --date=short 2>/dev/null || echo 'N/A')"
@@ -97,7 +135,9 @@ _gw_switch () {
         else
             label="  $target_branch"
         fi
-        label="$label ($commit_date)"
+        # Pad to align dates
+        padding=$((max_len - ${#target_branch}))
+        printf -v label "%s%*s  %s" "$label" $padding "" "$commit_date"
         menu+=("$i" "$label")
     done
 
