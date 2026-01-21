@@ -88,14 +88,16 @@ _gw_switch () {
         "" \
         "Current branch is indicated with an asterisk.")"
     local menu=(dialog --title "Worktree switch" --menu "$prompt" 0 0 0 -1 "(DEFAULT)")
-    local i=0 label target_dir target_branch
+    local i=0 label target_dir target_branch commit_date
     for ((i=0; i<${#worktree_list[@]}; i+=2)); do
         target_dir="${worktree_list[i]}"; target_branch="${worktree_list[i+1]}"
+        commit_date="$(git -C "$target_dir" log -1 --format=%cd --date=short 2>/dev/null || echo 'N/A')"
         if [ "$current_branch" = "$target_branch" ]; then
             label="* $target_branch"
         else
             label="  $target_branch"
         fi
+        label="$label ($commit_date)"
         menu+=("$i" "$label")
     done
 
