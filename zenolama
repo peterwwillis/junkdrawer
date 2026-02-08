@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# zenolama - Use Zenity GUI to ask Ollama a question and display answer
+#
+set -eu
+[ "${DEBUG:-0}" = 1 ] && set -x
+
+# Models to use, in order of biggest/slowest to smallest/fastest
+#    hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M
+#                           As fast as llama3.2:3b, but 9x larger,
+#                           optimized for coding tasks and chat
+#    phi3.5                 Almost as fast as llama3.2:3b, twice as big
+#    llama3.2:3b            Fairly fast and good answers
+#    gemma2:2b              Slightly faster/smaller than llama3.2:3b
+#    qwen2.5:1.5b           Twice as fast as llama3.2:3b, half the size
+#
+MODEL="llama3.2:latest"
+MODEL_FAST="qwen2.5:1.5b"
+MODEL_REASONING="phi3.5"
+MODEL_CODING="hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M"
+
+
+#######################################################################
+
+
+_usage () {
+    cat <<EOUSAGE
+Usage: $0 [OPTIONS] [PROMPT]
+
+Takes a question from a user in a Zenity GUI (or command line),
+then pipes it into 'ollama run' and pipes answer to a Zenity GUI text box.
+
+Options:
+  -c            Use the coding model ($MODEL_CODING)
+  -r            Use the reasoning model ($MODEL_REASONING)
+  -f            Use the fast model ($MODEL_FAST)
+  -h            This screen
+EOUSAGE
+    exit 1
+}
+
+MODEL_TYPE="${MODEL_TYPE:-default}"
+while getopts "crfh" arg ; do
+    case "$arg" in
+        c)          MODEL_TYPE="coding" ;;
+        r)          MODEL_TYPE="reasoning" ;;
+        f)          MODEL_TYPE="fast" ;;
+        h)          _usage ;;
+    esac
+done
+shift $((OPTIND-1))
+
+PROMPT="$*"
+if [ -z "$PROMPT" ] ; then
+
+    RESPONSE="$(zenity --forms --title="Ollama Query" \
+        --text="Configure your query" \
+        --add-combo="Select Model" --combo-values="default|fast|reasoning|coding" \
+        --add-entry="Your Question")"
+
+    # Zenity returns values separated by a pipe | (e.g., "llama3.2:3b|What is 2+2?")
+    IFS='|' read -r MODEL_TYPE PROMPT <<<"$RESPONSE"
+
+    if [ -z "$PROMPT" ] ; then
+        echo "$0: No prompt given"
+        exit 1
+    fi
+fi
+
+case "$MODEL_TYPE" in
+    default)        true ;;
+    fast)           MODEL="$MODEL_FAST" ;;
+    reasoning)      MODEL="$MODEL_REASONING" ;;
+    coding)         MODEL="$MODEL_CODING" ;;
+esac
+
+# Display the output in a Zenity scrollable text information box
+( printf "Processing...\n\n" ; 
+  ollama run "$MODEL" <<<"$PROMPT" ) | \
+      zenity \
+        --text-info \
+        --title="Ollama Query Result" \
+        --width=800 \
+        --height=600 \
+        --editable
