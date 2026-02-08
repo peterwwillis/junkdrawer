@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# run-as-me - try to run headless commands similar to my interactive session
+set -eu
+[ "${DEBUG:-0}" = "1" ] && set -x
+
+export USER="$(id -un)"
+export HOME="$(getent passwd "$USER" | cut -d : -f 6)"
+
+# Load the variables used for interactive sessions
+for file in "$HOME/.bashrc" ; do
+    [ -r "$file" ] && . "$file"
+done
+
+# Load non-interactive variables
+for file in "$HOME/.bash_profile" "$HOME/.profile" ; do
+    [ -r "$file" ] && . "$file"
+done
+
+# Load any variables used in X sessions
+for file in "$HOME/.xprofile" ; do
+    [ -r "$file" ] && . "$file"
+done
+
+exec "$@"
