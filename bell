@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+[ "${DEBUG:-0}" = "1" ] && set -x
+
+if [ $# -eq 1 ] && printf "%s\n" "$1" | grep -q -E '^[[:digit:]]$' ; then
+    for i in `seq 1 $1` ; do
+        echo -n "\a"
+        sleep 0.5
+    done
+else
+    echo -n "\a"
+fi
