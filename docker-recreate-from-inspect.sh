@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
+# docker-recreate-from-inspect.sh - recreate the 'docker run' line based on a running container
+#
+# It may be that you want to stop, destroy, and then re-run a Docker container.
+# But what if you don't know how it was originally run? What arguments were used?
+#
+# This script will inspect the container to reconstruct the original run arguments
+# and print them out.
+# It can also optionally remove the container, re-pull the image, and start it again.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
+Recreate the 'docker run' line based on a running container,
+and stop/remove/start the container again.
+
 Usage:
   docker-recreate-from-inspect.sh <container> [OPTIONS]
 
@@ -12,8 +23,8 @@ Options:
   --dry-run    Print what would be done without making changes.
   --simple     Omit uncommon/verbose args from output:
                  hostname, domainname, user, shm-size, network, ipc, uts,
-                 pid, environment variables, and labels.
-  -h|--help    Show this help.
+                 pid, environment variables, labels.
+  -h|--help    Show this help screen
 
 Examples:
   # Print reconstructed docker run command (all options):
