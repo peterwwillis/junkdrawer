@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+# docker-openwebui - run openwebui in docker
+#
+# Details:
+#  - Always restarts, so it should come back up when its VM does
+#  - Maps host port 3000 to container port 8080
+#  - Adds the 'host.docker.internal' host so you can contact the host's ports
+#  - Maps volume data into Docker volume 'open-webui' to persist data
+#  - Container is called 'open-webui', and pulls the latest container.
+#    
+#    To update the container image, do:
+#        $ docker stop open-webui
+#        $ docker rm open-webui
+#        $ docker image rm ghcr.io/open-webui/open-webui:main
+#        $ ./docker-openwebui
+#
+set -eu
+exec docker run -d --restart=always -p 3000:8080 --add-host=host.docker.internal:host-gateway -v open-webui:/app/backend/data --name open-webui ghcr.io/open-webui/open-webui:main

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# docker-run-aia1 - A wrapper around 'docker run' for AI agent containers
+#
+# This passes just enough settings to run a Docker container (whose image name
+# you must pass) with some basic host files to match your current user,
+# and some basic filesystem mounts.
+#
+# If your current directory is within $HOME, but is not $HOME itself,
+# it will be volume-mounted as a read-write mount in the container.
+set -eu
+
+# assumes dind container is called 'dnd' and that we're using a docker network
+DIND_HOST="dind"
+DOCKER_NETWORK="dind-lab"
+
+_add_volume_mount () {
+    local d="$1" a="$2"
+    if [ -d "$d" ] ; then
+        # Do not resolve symlinks (-s); we want the passed directory as
+        # it has application-specific implications
+        _d="$(realpath -s "$d")"
+        docker_args+=(-v "$_d:$_d:$a")
+    fi
+}
+
+# Find current list of docker-run one-char args:
+#   $ docker run --help | sed -E 's/--.*//g' | excludecomments | grep '^[[:space:]]*-' | sed -E 's/[-, ]//g' | sort | tr -d '\n'
+#   acdehilmpPqtuvw
+while getopts ":W:R:" arg ; do
+
+    case "$arg" in
+        W)
+            _add_volume_mount "$OPTARG" "rw" ;;
+        R)
+            _add_volume_mount "$OPTARG" "ro" ;;
+    esac
+done
+#shift $((OPTIND-1))
+
+# This part specifies the DOCKER_HOST env var that will be passed into your new Docker container,
+# in case you will be running a container with the 'docker' CLI tool and you want to use a
+# docker-in-docker system. If you specified a DOCKER_NETWORK and DOCKER_HOST, that's what we'll
+# pass the DOCKER_HOST as.
+#
+# The container must be able to communicate with the docker-in-docker tcp connection.
+if [ -n "${DOCKER_NETWORK:-}" ] && [ -n "${DIND_HOST:-}" ] ; then
+    DIND_DOCKER_HOST="tcp://$DIND_HOST:2375"
+else
+    DIND_DOCKER_HOST="tcp://127.0.0.1:2375"
+fi
+
+declare -a docker_args=(docker run)
+
+# Pass the DOCKER_HOST env var to the container
+docker_args+=(-e DOCKER_HOST="$DIND_DOCKER_HOST")
+
+# Specify the docker network to connect the container to
+if [ -n "${DOCKER_NETWORK:-}" ] ; then
+    docker_args+=(--network "$DOCKER_NETWORK")
+fi
+
+# Docker run!
+# Map in your host's passwd, shadow, group files into the container so that
+# you can use volume mounts to access the host filesystem with the correct
+# permission mapping.
+exec "${docker_args[@]}" \
+        -v /etc/passwd:/etc/passwd:ro \
+        -v /etc/shadow:/etc/shadow:ro \
+        -v /etc/group:/etc/group:ro \
+        -v /etc/localtime:/etc/localtime:ro \
+        -v /etc/zoneinfo/US/Eastern:/etc/zoneinfo/US/Eastern:ro \
+        -u `id -u`:`id -g` \
+        -w "$(getent passwd $(id -un) | cut -d : -f 6)" \
+    -v "$HOME/git:$HOME/git:ro" \
+    -v "$HOME/aia1:$HOME/aia1:rw" \
+    "$@"

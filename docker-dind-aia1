@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# docker-dind-aia1 - run docker-in-docker for AI agent environment
+#
+# Start a colima VM with configuration for these mounts:
+#
+#   mounts:
+#     - location: ~/aia1
+#       writable: true
+#     - location: ~/git
+#       writable: false
+#
+# Then run this script *once* to load docker-in-docker into colima.
+# The container should restart when the VM does. If it doesn't, you
+# can just `docker rm dind` and then run this script again.
+#
+set -eu
+[ "${DEBUG:-0}" = "1" ] && set -x
+
+NAME="dind"
+NETWORK="dind-lab"
+PORTS="8000,8010,8020,8030,8040,8050,8060,8070,8080,8090,9000"
+
+declare -a docker_cmd=(docker run \
+                        -d \
+                        --restart=always \
+                        --privileged \
+                        --name "$NAME" \
+                        --network "$NETWORK" \
+                        -e DOCKER_TLS_CERTDIR= \
+                        -v dind-lab-data:/var/lib/docker
+                      )
+
+for port in $(printf "%s\n" "$PORTS" | sed -E 's/,/\n/g') ; do
+    docker_cmd+=(-p "$port:$port")
+done
+
+docker_cmd+=(-v "$HOME/git:$HOME/git:ro" \
+             -v "$HOME/aia1:$HOME/aia1:rw"
+            )
+
+
+"${docker_cmd[@]}" docker:27-dind
