@@ -58,8 +58,8 @@ _log () { printf "[%s] %s: %s\n" "$(date "+%Y-%m-%dT%H:%M:%S%z")" "$(basename "$
 
 # A bunch of portable-ish ways to get home directory
 _gethome () {
-    _home="$(getent passwd "$(id -un)" 2>/dev/null | cut -d : -f 6 2>/dev/null)"
-    _home="${_home:-$(id -P 2>/dev/null | cut -d : -f 9 2>/dev/null)}"
+    _home="$(getent passwd "$(id -un)" 2>/dev/null | cut -d : -f 6)"
+    _home="${_home:-$(id -P 2>/dev/null | cut -d : -f 9)}"
     _home="${_home:-$(perl -le'@_=getpwnam(getlogin);print $_[7]')}"
     _home="${_home:-$(python -c 'import os,pwd; print( pwd.getpwnam(os.getlogin()).pw_dir )')}"
     printf "%s\n" "$_home"

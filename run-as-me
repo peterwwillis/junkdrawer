@@ -1,10 +1,29 @@
 #!/usr/bin/env bash
-# run-as-me - try to run headless commands similar to my interactive session
+# run-as-me - Wrapper to run headless commands similar to my interactive session
+#
+# This wrapper is particularly useful if you have installed tools in your user's
+# home directory (ex. with mise, aqua, asdf, etc) using shims, and the shims
+# require the users' profile settings to be loaded first.
+#
+# Example: the following can be run from a systemd service:
+#
+#   env -i ~user/bin/run-as-me ~user/.local/share/mise/installs/ollama/0.16.3/bin/ollama
+#
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 
+
+# A bunch of portable-ish ways to get home directory
+_gethome () {
+    _home="$(getent passwd "$(id -un)" 2>/dev/null | cut -d : -f 6)"
+    _home="${_home:-$(id -P 2>/dev/null | cut -d : -f 9)}"
+    _home="${_home:-$(perl -le'@_=getpwnam(getlogin);print $_[7]')}"
+    _home="${_home:-$(python -c 'import os,pwd; print( pwd.getpwnam(os.getlogin()).pw_dir )')}"
+    printf "%s\n" "$_home"
+}
+
 export USER="$(id -un)"
-export HOME="$(getent passwd "$USER" | cut -d : -f 6)"
+export HOME="$(_gethome)"
 
 # Load the variables used for interactive sessions
 for file in "$HOME/.bashrc" ; do
@@ -16,7 +35,13 @@ for file in "$HOME/.bash_profile" "$HOME/.profile" ; do
     [ -r "$file" ] && . "$file"
 done
 
-# Load any variables used in X sessions
+# Load any variables used in X sessions.
+# You might want to add the following to this file:
+#
+#     if [ -z "${DISPLAY:-}" ] ; then
+#         echo ".xprofile: Error: no DISPLAY set; setting default one (:1)..."
+#         export DISPLAY=":1"
+#     fi
 for file in "$HOME/.xprofile" ; do
     [ -r "$file" ] && . "$file"
 done
