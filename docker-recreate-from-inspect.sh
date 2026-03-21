@@ -15,7 +15,7 @@ Recreate the 'docker run' line based on a running container,
 and stop/remove/start the container again.
 
 Usage:
-  docker-recreate-from-inspect.sh <container> [OPTIONS]
+  docker-recreate-from-inspect.sh [OPTIONS] <container>
 
 Options:
   --apply      Actually stop + remove + recreate the container.
@@ -40,7 +40,6 @@ EOF
 
 if [[ $# -lt 1 ]]; then usage; exit 1; fi
 
-container="$1"; shift || true
 apply="false"
 pull="false"
 dry_run="false"
@@ -53,10 +52,13 @@ while [[ $# -gt 0 ]]; do
     --dry-run)  dry_run="true" ;;
     --simple)   simple="true" ;;
     -h|--help)  usage; exit 0 ;;
-    *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
+    -*) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
+    *)          break ;;
   esac
   shift
 done
+
+container="$1"; shift || true
 
 [[ "$dry_run" == "true" ]] && apply="false"
 
