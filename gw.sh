@@ -12,6 +12,7 @@ declare -a worktree_list gw_commandlist
 # GW_SORT_MODE controls how the switch list is sorted
 # Values: "default" (git's order) or "date" (by last commit date, newest first)
 GW_SORT_MODE="${GW_SORT_MODE:-default}"
+GW_VERSION="1.0.0"
 
 DIALOG_OK=0
 # Dialog exit/status codes reference (only DIALOG_OK currently used in logic):
@@ -26,7 +27,7 @@ DIALOG_OK=0
 
 SCRIPT="$(basename "$0")"
 
-gw_commandlist=(switch add convert remove list)
+gw_commandlist=(switch add convert remove list version)
 
 _die () { _err "$*" ; exit 1 ; }
 _err () { printf "%s: Error: %s\n" "$SCRIPT" "$*" ; }
@@ -483,7 +484,7 @@ _gw () {
     [ "$selection" = "-1" ] && return 0
 
     # Run the selected command
-    _gw_runcmd "${gw_commandlist[$selection]}"
+    GW_INTERACTIVE=1 _gw_runcmd "${gw_commandlist[$selection]}"
 }
 
 # Run a specific command (non-interactive mode)
@@ -492,6 +493,7 @@ _gw_runcmd () {
     shift
     case "$cmd" in
         -h|--help)  _gw_usage ;;
+        -v|--version|version) _gw_version ;;
         sw|switch)  _gw_switch "$@" ;;
         a|add)      _gw_add "$@" ;;
         convert)    _gw_convert "$@" ;;
@@ -513,9 +515,19 @@ _check_dialog () {
     command -v dialog >/dev/null || _die "Could not find command: dialog (required for interactive mode)"
 }
 
+_gw_version () {
+    local version_str
+    version_str="gw version $GW_VERSION"
+    if [ "${GW_INTERACTIVE:-0}" = "1" ] && [ -t 1 ] && command -v dialog >/dev/null; then
+        dialog --title "Version" --msgbox "$version_str" 0 0
+    else
+        printf "%s\n" "$version_str"
+    fi
+}
+
 _gw_usage () {
     cat <<EOUSAGE
-gw: Bash wrapper around 'git worktree'
+gw: Bash wrapper around 'git worktree' (version $GW_VERSION)
 
 (Source this script into your shell with: \`source $SCRIPT\` ;
  then use the \`gw\` command)
@@ -532,6 +544,8 @@ Usage: gw [COMMAND] [ARGS]
 3. You can then select a command to run and the wrapper will make it easier to use.
 
 Commands:
+
+    version         Show the current version of 'gw'.
 
     switch [branch] Switch to a worktree directory. Looks up your worktree list,
                     presents you with a list of branches, and when you select one,
