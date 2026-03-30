@@ -1,20 +1,14 @@
 """
-AI Guard: Dynamic Write Access Controller for Linux Containers
-=============================================================
+AI Guard: Secure Dynamic Write Access Controller
+================================================
 PURPOSE:
 Toggles subdirectories between RO and RW for AI tools in containers.
-Uses bind-mount propagation to change permissions live.
+Uses direct subprocess execution (no shell) for security.
 
 USAGE:
-  Unlock:  sudo python3 ai_guard.py --allow ./src
-  Lock:    sudo python3 ai_guard.py --deny ./src
-  Reset:   sudo python3 ai_guard.py --reset    (Unmounts all previously allowed paths)
-  Status:  sudo python3 ai_guard.py --status ./src
-
-REQUIREMENTS:
-1. Linux Host.
-2. Container started with `:ro,rshared` volume flags.
-3. Sudoers entry for passwordless execution.
+  sudo python3 ai_guard.py --allow ./src
+  sudo python3 ai_guard.py --deny ./src
+  sudo python3 ai_guard.py --reset
 """
 
 import subprocess
@@ -24,16 +18,19 @@ import sys
 import re
 from datetime import datetime
 
-# Path to the log file (User must have write access, or keep in /var/log/ and use sudo)
 LOG_FILE = "/var/log/ai_guard.log"
 
 def log_event(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
+        # Ensure log file exists with restricted permissions if creating new
+        if not os.path.exists(LOG_FILE):
+            with open(os.open(LOG_FILE, os.O_CREAT | os.O_WRONLY, 0o600), "w") as f:
+                pass
         with open(LOG_FILE, "a") as f:
             f.write(f"[{timestamp}] {message}\n")
-    except PermissionError:
-        print(f"Warning: Cannot write to {LOG_FILE}. Run with sudo.")
+    except Exception as e:
+        print(f"Logging Error: {e}")
 
 def get_mount_state(target_path):
     target_path = os.path.abspath(target_path)
@@ -41,20 +38,21 @@ def get_mount_state(target_path):
         with open("/proc/self/mountinfo", "r") as f:
             for line in f:
                 parts = line.split()
-                # Field 5 is the mount point in /proc/self/mountinfo
+                # Field 5 is the mount point
                 if len(parts) > 4 and parts[4] == target_path:
-                    # Look for 'rw' or 'ro' in the options (usually after the '-' separator)
                     return True, "rw" in line
     except Exception as e:
         print(f"Error reading mountinfo: {e}")
     return False, False
 
-def run_cmd(cmd):
+def run_secure_cmd(args):
+    """Executes a command directly without a shell, returning (success, error_msg)."""
     try:
-        subprocess.check_call(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError:
-        return False
-    return True
+        # capture_output=True handles stdout/stderr separately
+        result = subprocess.run(args, capture_output=True, text=True, check=True)
+        return True, ""
+    except subprocess.CalledProcessError as e:
+        return False, e.stderr.strip() or e.stdout.strip()
 
 def allow_write(path):
     abs_path = os.path.abspath(path)
@@ -67,12 +65,21 @@ def allow_write(path):
         print(f"Already writable: {abs_path}")
         return
 
-    if run_cmd(f"mount --bind '{abs_path}' '{abs_path}'") and \
-       run_cmd(f"mount -o remount,rw '{abs_path}'"):
+    # Step 1: Bind mount
+    ok, err = run_secure_cmd(["/usr/bin/mount", "--bind", abs_path, abs_path])
+    if not ok:
+        print(f"Mount Failure: {err}")
+        return
+
+    # Step 2: Remount RW
+    ok, err = run_secure_cmd(["/usr/bin/mount", "-o", "remount,rw", abs_path])
+    if ok:
         print(f"🔓 Unlocked: {abs_path}")
         log_event(f"ALLOWED: {abs_path}")
     else:
-        print(f"Failed to unlock {abs_path}")
+        print(f"Remount Failure: {err}")
+        # Cleanup the failed bind mount
+        run_secure_cmd(["/usr/bin/umount", abs_path])
 
 def deny_write(path):
     abs_path = os.path.abspath(path)
@@ -81,19 +88,18 @@ def deny_write(path):
         print(f"Already locked: {abs_path}")
         return
 
-    if run_cmd(f"umount '{abs_path}'"):
+    ok, err = run_secure_cmd(["/usr/bin/umount", abs_path])
+    if ok:
         print(f"🔒 Locked: {abs_path}")
         log_event(f"REVOKED: {abs_path}")
     else:
-        print(f"Failed to lock {abs_path}")
+        print(f"Unmount Failure: {err}")
 
 def reset_all():
-    """Reads the log to find all 'ALLOWED' paths and unmounts them if they are still mounted."""
     if not os.path.exists(LOG_FILE):
-        print("No log file found. Nothing to reset.")
+        print("No log file found.")
         return
 
-    # Extract unique paths that were allowed
     paths_to_check = set()
     with open(LOG_FILE, "r") as f:
         for line in f:
@@ -101,43 +107,36 @@ def reset_all():
             if match:
                 paths_to_check.add(match.group(1).strip())
 
-    if not paths_to_check:
-        print("No previous allow operations found in log.")
-        return
-
-    print("Checking for active AI Guard mounts to reset...")
     for path in paths_to_check:
         mounted, _ = get_mount_state(path)
         if mounted:
             deny_write(path)
     
-    # Clear the log after a successful total reset
     open(LOG_FILE, 'w').close()
-    print("✨ Reset complete. Log cleared.")
+    print("✨ Reset complete.")
 
 def main():
     parser = argparse.ArgumentParser(description="AI Guard")
     parser.add_argument('--allow', '-a', metavar='DIR')
     parser.add_argument('--deny', '-d', metavar='DIR')
     parser.add_argument('--status', '-s', metavar='DIR')
-    parser.add_argument('--reset', action='store_true', help='Reset all mounts based on logs')
+    parser.add_argument('--reset', action='store_true')
     
     args = parser.parse_args()
+    
     if os.geteuid() != 0:
-        print("Permission Denied. Please run: sudo python3 ai_guard.py [args]")
+        print("Security Error: This script must be run via sudo.")
         sys.exit(1)
 
     if args.reset:
         reset_all()
     elif args.status:
         mounted, rw = get_mount_state(args.status)
-        print(f"Path: {os.path.abspath(args.status)}\nState: {'READ-WRITE' if (mounted and rw) else 'READ-ONLY'}")
+        print(f"Path: {os.path.abspath(args.status)}\nState: {'RW' if (mounted and rw) else 'RO'}")
     elif args.allow:
         allow_write(args.allow)
     elif args.deny:
         deny_write(args.deny)
-    else:
-        parser.print_help()
 
 if __name__ == "__main__":
     main()
