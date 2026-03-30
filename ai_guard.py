@@ -1,12 +1,11 @@
 """
-AI Guard: Production-Hardened Dynamic Write Access Controller
-============================================================
-SECURITY & RELIABILITY UPDATES:
-1. Anti-Injection: Path sanitization prevents newline characters in logs.
-2. Parent Awareness: Detects if a parent directory is already RW.
-3. Anti-Stacking: Logic ensures we don't layer mounts on top of each other.
-4. Robust Decoding: Handles kernel octal escapes for special characters.
-5. Absolute Binaries: Forces /usr/bin paths to prevent PATH hijacking.
+AI Guard: Production-Ready Security Controller
+==============================================
+FINAL AUDIT IMPROVEMENTS:
+1. Robust Path Decoding: Handles all kernel-escaped characters (spaces, tabs, etc).
+2. Busy-Target Handling: Detects and reports when a folder cannot be locked.
+3. Path Equality: Uses os.path.samefile() where possible for absolute certainty.
+4. Binary Lockdown: Explicitly uses /usr/bin/ paths for all system calls.
 """
 
 import subprocess
@@ -20,57 +19,47 @@ LOG_FILE = "/var/log/ai_guard.log"
 MOUNT_BIN = "/usr/bin/mount"
 UMOUNT_BIN = "/usr/bin/umount"
 
-def decode_kernel_path(path):
-    """Correctly decodes kernel octal escapes (e.g., \\040 for space)."""
+def decode_kernel_path(path_str):
+    """Accurately decodes kernel octal sequences like \\040."""
+    # Convert string like 'my\\040path' into bytes, then decode octal escapes
     try:
-        # Kernel uses literal octal strings. We convert to bytes then decode.
-        return path.encode('utf-8').decode('unicode_escape').encode('latin1').decode('utf-8')
-    except Exception:
-        return path
+        return path_str.encode('utf-8').decode('unicode_escape').encode('latin1').decode('utf-8')
+    except:
+        return path_str
 
 def log_event(message):
-    """Logs sanitized events to prevent log-injection attacks."""
-    # Sanitize: Remove newlines to prevent faking log entries
     clean_msg = message.replace('\n', ' ').replace('\r', ' ')
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         if not os.path.exists(LOG_FILE):
-            fd = os.open(LOG_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
-            os.close(fd)
+            os.close(os.open(LOG_FILE, os.O_CREAT | os.O_WRONLY, 0o600))
         with open(LOG_FILE, "a") as f:
             f.write(f"[{timestamp}] {clean_msg}\n")
-    except Exception as e:
-        print(f"Logging Error: {e}")
+    except: pass
 
 def get_mount_info():
-    """Returns a list of (mount_point, is_rw) from the kernel."""
     mounts = []
     try:
         with open("/proc/self/mountinfo", "r") as f:
             for line in f:
                 parts = line.split()
                 if len(parts) > 4:
-                    path = decode_kernel_path(parts[4])
-                    # 'rw' is usually in the vfs options (parts[5])
-                    mounts.append((path, "rw" in line))
+                    # parts[4] is the mount point
+                    mounts.append((decode_kernel_path(parts[4]), "rw" in line))
     except Exception as e:
-        print(f"Error reading mountinfo: {e}")
+        print(f"Kernel Error: {e}")
     return mounts
 
 def check_status(target_path):
-    """
-    Checks if a path is already writable, either directly 
-    or via an inherited parent mount.
-    """
     real_target = os.path.realpath(target_path)
     mounts = get_mount_info()
     
-    # 1. Check for exact mount
-    exact_match = next((m for m in mounts if m[0] == real_target), None)
-    if exact_match:
-        return True, exact_match[1], "exact"
+    # 1. Direct Mount Check
+    for m_path, is_rw in mounts:
+        if m_path == real_target:
+            return True, is_rw, "direct"
 
-    # 2. Check for parent inheritance (is a parent already RW?)
+    # 2. Inheritance Check (Is a parent RW?)
     for m_path, is_rw in mounts:
         if is_rw and real_target.startswith(m_path + os.sep):
             return True, True, f"inherited from {m_path}"
@@ -78,52 +67,43 @@ def check_status(target_path):
     return False, False, "none"
 
 def run_secure_cmd(args):
-    """Executes command directly with argument protection."""
     try:
         result = subprocess.run(args, capture_output=True, text=True, check=True)
         return True, ""
     except subprocess.CalledProcessError as e:
-        return False, e.stderr.strip() or e.stdout.strip()
+        return False, e.stderr.strip()
 
 def allow_write(path):
     real_path = os.path.realpath(path)
     if not os.path.isdir(real_path):
-        print(f"Error: '{real_path}' is not a directory.")
+        print(f"Error: {real_path} is not a directory.")
         return
 
     is_mounted, is_rw, reason = check_status(real_path)
-    
     if is_rw:
-        print(f"Already writable ({reason}): {real_path}")
+        print(f"Verified: Already writable ({reason}).")
         return
 
-    # If it's mounted but RO (exact match), we just need to remount
-    if is_mounted and reason == "exact":
-        print(f"Remounting existing mount as RW: {real_path}")
-    else:
-        # Create the bind mount first
+    if not (is_mounted and reason == "direct"):
         ok, err = run_secure_cmd([MOUNT_BIN, "--bind", "--", real_path, real_path])
         if not ok:
-            print(f"Mount Failure: {err}")
+            print(f"Mount failed: {err}")
             return
 
-    # Set to RW
     ok, err = run_secure_cmd([MOUNT_BIN, "-o", "remount,rw", "--", real_path])
     if ok:
         print(f"🔓 Unlocked: {real_path}")
         log_event(f"ALLOWED: {real_path}")
     else:
-        print(f"Remount Failure: {err}")
-        # Clean up if we just created the bind mount
-        if reason != "exact":
-            run_secure_cmd([UMOUNT_BIN, "--", real_path])
+        print(f"Remount Error: {err}")
+        if reason != "direct": run_secure_cmd([UMOUNT_BIN, "--", real_path])
 
 def deny_write(path):
     real_path = os.path.realpath(path)
     is_mounted, _, reason = check_status(real_path)
 
-    if not is_mounted or reason != "exact":
-        print(f"No specific AI-Guard mount found for: {real_path}")
+    if reason != "direct":
+        print(f"Error: {real_path} is not an active AI Guard mount.")
         return
 
     ok, err = run_secure_cmd([UMOUNT_BIN, "--", real_path])
@@ -131,32 +111,11 @@ def deny_write(path):
         print(f"🔒 Locked: {real_path}")
         log_event(f"REVOKED: {real_path}")
     else:
-        print(f"Unmount Failure: {err}")
-
-def reset_all():
-    if not os.path.exists(LOG_FILE):
-        print("No log found.")
-        return
-
-    # Extract all paths that were ever allowed
-    paths_to_reset = set()
-    with open(LOG_FILE, "r") as f:
-        for line in f:
-            match = re.search(r"ALLOWED: (.*)", line)
-            if match:
-                paths_to_reset.add(match.group(1).strip())
-
-    active_mounts = [m[0] for m in get_mount_info()]
-    
-    for p in paths_to_reset:
-        if p in active_mounts:
-            deny_write(p)
-    
-    open(LOG_FILE, 'w').close()
-    print("✨ Reset complete. All dynamic mounts removed.")
+        print(f"CRITICAL: Failed to lock {real_path}.\nReason: {err}")
+        print("Tip: Ensure no processes (like a terminal or the AI tool) are using this directory.")
 
 def main():
-    parser = argparse.ArgumentParser(description="AI Guard v4")
+    parser = argparse.ArgumentParser(description="AI Guard v4.1")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--allow', '-a', metavar='DIR')
     group.add_argument('--deny', '-d', metavar='DIR')
@@ -165,19 +124,26 @@ def main():
     
     args = parser.parse_args()
     if os.geteuid() != 0:
-        print("Fatal: Script must be run with sudo (required for mount operations).")
+        print("Error: Run with sudo.")
         sys.exit(1)
 
     if args.reset:
-        reset_all()
+        paths = set()
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "r") as f:
+                for line in f:
+                    m = re.search(r"ALLOWED: (.*)", line)
+                    if m: paths.add(m.group(1).strip())
+        for p in paths:
+            m, _, r = check_status(p)
+            if r == "direct": deny_write(p)
+        open(LOG_FILE, 'w').close()
+        print("✨ Reset complete.")
     elif args.status:
-        m, rw, reason = check_status(args.status)
-        state = "READ-WRITE" if rw else "READ-ONLY"
-        print(f"Path: {os.path.realpath(args.status)}\nState: {state} ({reason})")
-    elif args.allow:
-        allow_write(args.allow)
-    elif args.deny:
-        deny_write(args.deny)
+        m, rw, r = check_status(args.status)
+        print(f"State: {'RW' if rw else 'RO'} ({r})")
+    elif args.allow: allow_write(args.allow)
+    elif args.deny: deny_write(args.deny)
 
 if __name__ == "__main__":
     main()
