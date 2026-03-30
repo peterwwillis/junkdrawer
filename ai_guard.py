@@ -1,11 +1,39 @@
+#!/usr/bin/env python
+
 """
-AI Guard: Production-Ready Security Controller
-==============================================
-FINAL AUDIT IMPROVEMENTS:
-1. Robust Path Decoding: Handles all kernel-escaped characters (spaces, tabs, etc).
-2. Busy-Target Handling: Detects and reports when a folder cannot be locked.
-3. Path Equality: Uses os.path.samefile() where possible for absolute certainty.
-4. Binary Lockdown: Explicitly uses /usr/bin/ paths for all system calls.
+AI Guard: Secure Dynamic Write Access Controller (v5 - Final)
+============================================================
+
+WHAT IS THIS?
+A security-focused utility for Linux to manage directory permissions for AI 
+coding tools running in containers. It allows you to toggle specific 
+directories between Read-Only (RO) and Read-Write (RW) without 
+restarting the container or modifying the AI tool.
+
+HOW IT WORKS:
+1. Start your container with the project root mounted as 'ro,rshared'.
+2. AI Guard uses 'bind propagation' to create "writeable islands" on top 
+   of the read-only foundation. 
+3. Because of 'rshared', the container sees the permission change instantly.
+
+PREREQUISITES:
+- Linux Host.
+- Project mounted in Docker/Podman with: -v /path:/workspace:ro,rshared
+- Sudoers entry for passwordless use (optional but recommended).
+
+USAGE:
+  Unlock a dir:  sudo python3 ai_guard.py --allow ./src
+  Lock a dir:    sudo python3 ai_guard.py --deny ./src
+  Force Lock:    sudo python3 ai_guard.py --deny ./src --force
+  Reset all:     sudo python3 ai_guard.py --reset
+
+POTENTIAL PROBLEMS & SOLUTIONS:
+- Problem: "Target is Busy" error when locking.
+  Cause: The AI tool or a terminal is currently "inside" that folder.
+  Solution: Use the --force flag to kill processes using that directory.
+- Problem: Changes aren't appearing in the container.
+  Cause: Container was started without the 'rshared' propagation flag.
+  Solution: Restart container with ':ro,rshared' in the volume string.
 """
 
 import subprocess
@@ -18,10 +46,10 @@ from datetime import datetime
 LOG_FILE = "/var/log/ai_guard.log"
 MOUNT_BIN = "/usr/bin/mount"
 UMOUNT_BIN = "/usr/bin/umount"
+FUSER_BIN = "/usr/bin/fuser"
 
 def decode_kernel_path(path_str):
     """Accurately decodes kernel octal sequences like \\040."""
-    # Convert string like 'my\\040path' into bytes, then decode octal escapes
     try:
         return path_str.encode('utf-8').decode('unicode_escape').encode('latin1').decode('utf-8')
     except:
@@ -44,7 +72,6 @@ def get_mount_info():
             for line in f:
                 parts = line.split()
                 if len(parts) > 4:
-                    # parts[4] is the mount point
                     mounts.append((decode_kernel_path(parts[4]), "rw" in line))
     except Exception as e:
         print(f"Kernel Error: {e}")
@@ -54,12 +81,10 @@ def check_status(target_path):
     real_target = os.path.realpath(target_path)
     mounts = get_mount_info()
     
-    # 1. Direct Mount Check
     for m_path, is_rw in mounts:
         if m_path == real_target:
             return True, is_rw, "direct"
 
-    # 2. Inheritance Check (Is a parent RW?)
     for m_path, is_rw in mounts:
         if is_rw and real_target.startswith(m_path + os.sep):
             return True, True, f"inherited from {m_path}"
@@ -71,7 +96,7 @@ def run_secure_cmd(args):
         result = subprocess.run(args, capture_output=True, text=True, check=True)
         return True, ""
     except subprocess.CalledProcessError as e:
-        return False, e.stderr.strip()
+        return False, e.stderr.strip() or e.stdout.strip()
 
 def allow_write(path):
     real_path = os.path.realpath(path)
@@ -98,7 +123,7 @@ def allow_write(path):
         print(f"Remount Error: {err}")
         if reason != "direct": run_secure_cmd([UMOUNT_BIN, "--", real_path])
 
-def deny_write(path):
+def deny_write(path, force=False):
     real_path = os.path.realpath(path)
     is_mounted, _, reason = check_status(real_path)
 
@@ -106,44 +131,58 @@ def deny_write(path):
         print(f"Error: {real_path} is not an active AI Guard mount.")
         return
 
+    if force:
+        print(f"Force-clearing processes using {real_path}...")
+        run_secure_cmd([FUSER_BIN, "-k", "-m", real_path])
+
     ok, err = run_secure_cmd([UMOUNT_BIN, "--", real_path])
     if ok:
         print(f"🔒 Locked: {real_path}")
         log_event(f"REVOKED: {real_path}")
     else:
         print(f"CRITICAL: Failed to lock {real_path}.\nReason: {err}")
-        print("Tip: Ensure no processes (like a terminal or the AI tool) are using this directory.")
+        if "target is busy" in err.lower():
+            print("Tip: Use --force to kill processes holding this directory open.")
+
+def reset_all():
+    paths = set()
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r") as f:
+            for line in f:
+                m = re.search(r"ALLOWED: (.*)", line)
+                if m: paths.add(m.group(1).strip())
+    
+    for p in paths:
+        m, _, r = check_status(p)
+        if r == "direct": 
+            deny_write(p, force=False)
+            
+    open(LOG_FILE, 'w').close()
+    print("✨ Reset complete. System back to default Read-Only.")
 
 def main():
-    parser = argparse.ArgumentParser(description="AI Guard v4.1")
+    parser = argparse.ArgumentParser(description="AI Guard v5")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--allow', '-a', metavar='DIR')
     group.add_argument('--deny', '-d', metavar='DIR')
     group.add_argument('--status', '-s', metavar='DIR')
     group.add_argument('--reset', action='store_true')
+    parser.add_argument('--force', '-f', action='store_true', help='Force unmount by killing active processes')
     
     args = parser.parse_args()
     if os.geteuid() != 0:
-        print("Error: Run with sudo.")
+        print("Fatal: Run with sudo.")
         sys.exit(1)
 
     if args.reset:
-        paths = set()
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, "r") as f:
-                for line in f:
-                    m = re.search(r"ALLOWED: (.*)", line)
-                    if m: paths.add(m.group(1).strip())
-        for p in paths:
-            m, _, r = check_status(p)
-            if r == "direct": deny_write(p)
-        open(LOG_FILE, 'w').close()
-        print("✨ Reset complete.")
+        reset_all()
     elif args.status:
         m, rw, r = check_status(args.status)
         print(f"State: {'RW' if rw else 'RO'} ({r})")
-    elif args.allow: allow_write(args.allow)
-    elif args.deny: deny_write(args.deny)
+    elif args.allow:
+        allow_write(args.allow)
+    elif args.deny:
+        deny_write(args.deny, force=args.force)
 
 if __name__ == "__main__":
     main()
