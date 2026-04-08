@@ -9,7 +9,7 @@
 #
 #   env -i ~user/bin/run-as-me ~user/.local/share/mise/installs/ollama/0.16.3/bin/ollama
 #
-set -eu
+
 [ "${DEBUG:-0}" = "1" ] && set -x
 
 
