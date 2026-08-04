@@ -9,9 +9,6 @@ _die () { _err "$*" ; exit 1 ; }
 
 command -v dialog >/dev/null || _die "dialog is required but not installed"
 
-declare -a _items=()
-declare -a _targets=()
-
 _list_screen_sessions () {
     local sessions name status
     sessions="$(screen -ls 2>/dev/null)" || return 0
@@ -32,37 +29,49 @@ _list_tmux_sessions () {
     done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
 }
 
-_list_screen_sessions
-_list_tmux_sessions
+_main () {
 
-if [ ${#_items[@]} -eq 0 ] ; then
-    _die "No screen or tmux sessions found"
-fi
+    local -a _items=()
+    local -a _targets=()
 
-_TMP=$(mktemp)
-dialog \
-    --backtitle "rscreen" \
-    --menu "Select a session to attach" 25 80 20 \
-    "${_items[@]}" 2>"$_TMP"
-_rc=$?
-_selected="$(cat "$_TMP")"
+    _list_screen_sessions
+    _list_tmux_sessions
 
-if [ "$_rc" -ne 0 ] || [ -z "${_selected:-}" ] ; then exit 0 ; fi
-
-_type="${_selected%%:*}"
-_name="${_selected#*:}"
-
-_attach_screen () {
-    local id="$1"
-    if screen -ls 2>/dev/null | grep -q "^[[:space:]]*${id}[[:space:]]*(Attached)" ; then
-        exec screen -d -r "$id"
-    else
-        exec screen -r "$id"
+    if [ ${#_items[@]} -eq 0 ] ; then
+        _die "No screen or tmux sessions found"
     fi
+
+    _TMP=$(mktemp)
+    dialog \
+        --backtitle "rscreen" \
+        --menu "Select a session to attach" 25 80 20 \
+        "${_items[@]}" 2>"$_TMP"
+    _rc=$?
+    _selected="$(cat "$_TMP")"
+
+    if [ "$_rc" -ne 0 ] || [ -z "${_selected:-}" ] ; then exit 0 ; fi
+
+    _type="${_selected%%:*}"
+    _name="${_selected#*:}"
+
+    _attach_screen () {
+        local id="$1"
+        if screen -ls 2>/dev/null | grep -q "^[[:space:]]*${id}[[:space:]]*(Attached)" ; then
+            exec screen -d -r "$id"
+        else
+            exec screen -r "$id"
+        fi
+    }
+
+    case "$_type" in
+        screen) _attach_screen "$_name" ;;
+        tmux)   tmux attach -t "$_name" ;;
+        *)      _die "Unknown session type: $_type" ;;
+    esac
+
 }
 
-case "$_type" in
-    screen) _attach_screen "$_name" ;;
-    tmux)   exec tmux attach -t "$_name" ;;
-    *)      _die "Unknown session type: $_type" ;;
-esac
+while true ; do
+    _main
+    sleep 0.25
+done
