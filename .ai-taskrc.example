@@ -1,0 +1,74 @@
+# .ai-taskrc - example config for ai-task.sh
+#
+# This file is sourced as a plain bash script, so any shell syntax works,
+# but plain variable assignments (no `export` needed) are the norm.
+#
+# Copy this to one of (name it either `ai-task.conf` or `.ai-taskrc` - both
+# names are checked at both scopes):
+#   $HOME/.config/ai-task/ai-task.conf   - your global defaults
+#   $HOME/.ai-taskrc                     - your global defaults (rc-style)
+#   $(pwd)/ai-task.conf                  - project-local overrides (e.g. repo root)
+#   $(pwd)/.ai-taskrc                    - project-local overrides (rc-style)
+# All present ones are loaded, home scope first, then cwd on top. An env
+# var you set for this specific invocation always wins over any of them.
+
+# Required - no hardcoded default. If unset here, you'll be prompted once
+# and the answer gets appended to this file (or created fresh if neither
+# config file exists yet).
+#AITASK_TEAM="MYTEAM"
+
+# Optional overrides - shown here with the script's own hardcoded defaults.
+# Uncomment and edit as needed.
+
+# AITASK_LABEL="aitask"
+# AITASK_ASSIGNEE="self"
+# AITASK_STATE="unstarted"
+# AITASK_CYCLE="active"
+# AITASK_SORT="priority"
+# AITASK_PRIORITY=""                # 1-4, unset = no filter
+# AITASK_IN_PROGRESS_STATE="In Progress"
+# AITASK_BLOCKED_STATE="Blocked"
+# AITASK_PERMISSION_MODE="auto"     # claude --permission-mode value (claude only)
+
+# Which agent CLI to launch: "claude" (default) or "opencode".
+# AITASK_AGENT_TYPE="claude"
+
+# Model for the launched session - format depends on AITASK_AGENT_TYPE (see
+# README.md "Agent backends" / "Looking up model names"):
+#   claude:   an alias ("sonnet", "opus", "fable") or full model name, e.g.
+#             claude-sonnet-5 - run `claude` and type `/model` for the
+#             current live list rather than trusting a hardcoded one here.
+#   opencode: "provider/model", e.g. anthropic/claude-sonnet-5 - run
+#             `opencode models` to list what's available to your account.
+# AITASK_MODEL="claude-sonnet-5"
+
+# Settings/config JSON file for the selected agent, merged in at runtime
+# (claude: passed to --settings; opencode: merged into the generated
+# OPENCODE_CONFIG alongside the required opencode-sandbox plugin entry).
+# Trusted input - only point this at a file you wrote or trust.
+# AITASK_AGENT_SETTINGS="$HOME/.config/ai-task/my-agent-settings.json"
+
+# Where new worktrees get created. Defaults to
+# $HOME/.local/ai-task/worktrees/<repo-name> - a location this script owns
+# and controls, independent of any particular terminal app/IDE. If you'd
+# rather share worktrees with another tool's layout instead (so that tool
+# can also see/open them), point this at its convention. See README.md for
+# a list of what a few common tools use.
+# AITASK_WORKTREE_ROOT="$HOME/.local/ai-task/worktrees/my-repo"
+
+# AWS ReadOnly mode: pre-auth read-only AWS credentials + AWS-specific
+# prompt and sandbox additions (see the aws-preauth command). ON BY
+# DEFAULT. Set false for a repo with no AWS/terraform component - the
+# script works fine without it, it just won't touch AWS at all.
+# AITASK_AWS_READONLY="false"
+
+# Comma-separated extra hosts for the sandbox network allowlist, on top of
+# the built-in defaults (github.com, linear.app, + AWS hosts if AWS
+# ReadOnly mode is on).
+# AITASK_ALLOWED_HOSTS="registry.npmjs.org,pypi.org"
+
+# A custom prompt template file (see ai-task.sh --help for the placeholder
+# tokens it supports) and/or extra literal text appended to whichever
+# prompt is used.
+# AITASK_PROMPT_FILE="$HOME/.config/ai-task/my-prompt.txt"
+# AITASK_PROMPT_EXTRA="Prefer small, incremental commits."
