@@ -67,6 +67,17 @@
 # ReadOnly mode is on).
 # AITASK_ALLOWED_HOSTS="registry.npmjs.org,pypi.org"
 
+# After the tmux + agent are up, also register the worktree + AI session
+# as a new task in the Termic app (runs `termic new --from <worktree>
+# --resume <session-id>`). Off by default. Currently the only supported
+# value is "new-task" - same one as the --termic CLI flag. The script
+# auto-discovers the agent session id (claude: `claude agents --json` /
+# opencode: `opencode session list --format json`) with a 30s polling
+# budget. On any failure (termic not installed, session not yet
+# registered, ...) the script warns and continues - the tmux session is
+# usable either way.
+# AITASK_TERMIC="new-task"
+
 # A custom prompt template file (see ai-task.sh --help for the placeholder
 # tokens it supports) and/or extra literal text appended to whichever
 # prompt is used.

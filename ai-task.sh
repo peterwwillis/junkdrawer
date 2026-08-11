@@ -126,6 +126,107 @@ _cmd_aws_preauth() {
     _info "Wrote $count read-only profile(s) to $outdir"
 }
 
+# _get_claude_session_id WORKTREE_DIR
+#
+# Prints the interactive claude session id registered under WORKTREE_DIR
+# (most recently started), or empty if none. `claude agents --json --cwd`
+# scopes the listing to background and interactive sessions whose working
+# directory is the given worktree. We filter to kind == "interactive"
+# because this script runs `claude` directly (not as a background agent).
+_get_claude_session_id() {
+    local worktree_dir="$1"
+    claude agents --json --cwd "$worktree_dir" 2>/dev/null \
+        | jq -r '[.[] | select(.kind == "interactive")]
+                 | sort_by(.startedAt) | reverse
+                 | .[0].sessionId // empty'
+}
+
+# _get_opencode_session_id WORKTREE_DIR
+#
+# Prints the opencode session id whose `directory` is WORKTREE_DIR (most
+# recently updated), or empty if none. `opencode session list --format
+# json` enumerates every session the opencode DB knows about; we filter
+# by the directory the agent was started in. The script runs opencode
+# non-interactively (`opencode run --auto ...`), which still creates a
+# session row in the DB.
+_get_opencode_session_id() {
+    local worktree_dir="$1"
+    opencode session list --format json 2>/dev/null \
+        | jq -r --arg d "$worktree_dir" \
+            '[.[] | select(.directory == $d)]
+             | sort_by(.updated) | reverse
+             | .[0].id // empty'
+}
+
+# _wait_for_session_id AGENT_TYPE WORKTREE_DIR
+#
+# Polls the agent-specific lookup for up to 30 seconds (1s interval),
+# printing the first non-empty result. Empty + non-zero return means
+# "timed out". Both agent CLIs register their session lazily after the
+# process spawns, so a fresh launch needs a moment to appear.
+_wait_for_session_id() {
+    local agent_type="$1" worktree_dir="$2"
+    local session_id attempt
+    for attempt in $(seq 1 30) ; do
+        if [ "$agent_type" = "claude" ] ; then
+            session_id="$(_get_claude_session_id "$worktree_dir")"
+        else
+            session_id="$(_get_opencode_session_id "$worktree_dir")"
+        fi
+        [ -n "$session_id" ] && { printf '%s' "$session_id"; return 0; }
+        sleep 1
+    done
+    return 1
+}
+
+# _do_termic_new_task WORKTREE_DIR AGENT_TYPE
+#
+# Opt-in post-launch hook: register the just-created worktree + AI agent
+# session as a new task in the Termic app. Runs:
+#
+#     termic new --from WORKTREE_DIR --resume AGENT_SESSION_ID
+#
+# Session id discovery is agent-specific (see helpers above). Failures
+# here are warnings, not errors - the tmux session and agent are already
+# running by this point, so a missing Termic install or a slow agent
+# lookup shouldn't break an otherwise-successful run. The user is told
+# the exact manual command to retry on their own.
+_do_termic_new_task() {
+    local worktree_dir="$1" agent_type="$2"
+    local session_id termic_json
+
+    _info "Creating Termic task from $worktree_dir..."
+
+    if ! command -v termic >/dev/null 2>&1 ; then
+        _err "termic not found in PATH - skipping Termic task creation. The tmux session and agent are still running."
+        return 0
+    fi
+
+    _info "Waiting for $agent_type session to register (up to 30s)..."
+    if ! session_id="$(_wait_for_session_id "$agent_type" "$worktree_dir")" ; then
+        _err "Couldn't auto-discover $agent_type session id for $worktree_dir after 30s."
+        _err "The tmux session and agent are still running. You can wire this up manually:"
+        _err "  termic new --from $worktree_dir --resume <session-id>"
+        return 0
+    fi
+    _info "Discovered session id: $session_id"
+
+    if ! termic_json="$(termic new --from "$worktree_dir" --resume "$session_id" --output-format json 2>&1)" ; then
+        _err "termic new failed - the tmux session is still running. You can retry manually:"
+        _err "  termic new --from $worktree_dir --resume $session_id"
+        return 0
+    fi
+
+    # Termic's --output-format json contract is additive, so defensive
+    # // empty fallbacks on every field we echo.
+    local task_name task_path task_branch
+    task_name="$(printf '%s' "$termic_json" | jq -r '.task.name // "<unknown>"')"
+    task_path="$(printf '%s' "$termic_json" | jq -r '.task.path // "<unknown>"')"
+    task_branch="$(printf '%s' "$termic_json" | jq -r '.task.branch // "<unknown>"')"
+    _info "Termic task created: $task_name (branch $task_branch, path $task_path)"
+    _info "Open with: termic open $task_name"
+}
+
 _usage() {
     cat <<EOUSAGE
 Usage: $SCRIPT COMMAND [OPTIONS]
@@ -220,6 +321,24 @@ has an AITASK_<NAME> env var equivalent):
                               cloud/AWS component
   --allowed-hosts HOSTS       Comma-separated extra sandbox network
                               allowlist entries
+  --termic ACTION            After the tmux + agent are up, register the
+                              just-created worktree and AI agent session as
+                              a new task in the Termic app (runs
+                              \`termic new --from <worktree> --resume
+                              <session-id>\`). Currently the only ACTION is
+                              \`new-task\`. Off by default; set AITASK_TERMIC
+                              in your config file to make it the default
+                              for a project. The script auto-discovers the
+                              agent's session id:
+                                claude:   \`claude agents --json --cwd
+                                          <worktree>\`
+                                opencode: \`opencode session list --format
+                                          json\` (filtered by directory)
+                              with a 30s polling budget. On any failure
+                              (termic not installed, session not yet
+                              registered, Termic CLI disabled, ...) the
+                              script warns and continues - the tmux session
+                              is already usable regardless.
   --prompt-file PATH          Use this file as the prompt instead of the
                               built-in template (supports {{IDENTIFIER}},
                               {{TITLE}}, {{URL}}, {{DESCRIPTION}},
@@ -234,7 +353,7 @@ Environment variables: AITASK_TEAM, AITASK_LABEL, AITASK_ASSIGNEE,
 AITASK_NO_ASSIGNEE, AITASK_STATE, AITASK_CYCLE, AITASK_SORT, AITASK_PRIORITY,
 AITASK_WORKTREE_ROOT, AITASK_IN_PROGRESS_STATE, AITASK_BLOCKED_STATE,
 AITASK_AGENT_TYPE, AITASK_PERMISSION_MODE, AITASK_MODEL, AITASK_AGENT_SETTINGS,
-AITASK_AWS_READONLY, AITASK_ALLOWED_HOSTS,
+AITASK_AWS_READONLY, AITASK_ALLOWED_HOSTS, AITASK_TERMIC,
 AITASK_PROMPT_FILE, AITASK_PROMPT_EXTRA.
 
 AITASK_TEAM falls back to linear-cli's own LINEAR_TEAM_ID; AITASK_SORT
@@ -323,7 +442,7 @@ ticket_id=""
 _AITASK_VARS="AITASK_TEAM AITASK_LABEL AITASK_ASSIGNEE AITASK_NO_ASSIGNEE AITASK_STATE AITASK_CYCLE
 AITASK_SORT AITASK_PRIORITY AITASK_WORKTREE_ROOT AITASK_IN_PROGRESS_STATE
 AITASK_BLOCKED_STATE AITASK_AGENT_TYPE AITASK_PERMISSION_MODE AITASK_MODEL AITASK_AGENT_SETTINGS
-AITASK_AWS_READONLY AITASK_ALLOWED_HOSTS
+AITASK_AWS_READONLY AITASK_ALLOWED_HOSTS AITASK_TERMIC
 AITASK_PROMPT_FILE AITASK_PROMPT_EXTRA"
 for v in $_AITASK_VARS ; do
     eval "orig_$v=\"\${$v:-}\""
@@ -381,7 +500,7 @@ _query_ready_issues() {
 
 cli_team="" cli_label="" cli_assignee="" cli_no_assignee="" cli_state="" cli_cycle="" cli_sort=""
 cli_priority="" cli_worktree_root="" cli_in_progress_state="" cli_blocked_state=""
-cli_agent_type="" cli_permission_mode="" cli_model="" cli_agent_settings="" cli_aws_readonly="" cli_allowed_hosts="" cli_prompt_file=""
+cli_agent_type="" cli_permission_mode="" cli_model="" cli_agent_settings="" cli_aws_readonly="" cli_allowed_hosts="" cli_termic="" cli_prompt_file=""
 cli_prompt_extra="" dry_run=0 first=0
 
 while [ $# -gt 0 ] ; do
@@ -404,6 +523,7 @@ while [ $# -gt 0 ] ; do
         --aws-readonly)         cli_aws_readonly="true" ;;
         --no-aws-readonly)      cli_aws_readonly="false" ;;
         --allowed-hosts)        shift; cli_allowed_hosts="$1" ;;
+        --termic)               shift; cli_termic="$1" ;;
         --prompt-file)          shift; cli_prompt_file="$1" ;;
         --prompt-extra)        shift; cli_prompt_extra="$1" ;;
         --first)               first=1 ;;
@@ -437,6 +557,7 @@ model="$(_resolve AITASK_MODEL "$cli_model" "")"
 agent_settings="$(_resolve AITASK_AGENT_SETTINGS "$cli_agent_settings" "")"
 aws_readonly="$(_resolve AITASK_AWS_READONLY "$cli_aws_readonly" "true")"
 allowed_hosts_extra="$(_resolve AITASK_ALLOWED_HOSTS "$cli_allowed_hosts" "")"
+termic_action="$(_resolve AITASK_TERMIC "$cli_termic" "")"
 prompt_file="$(_resolve AITASK_PROMPT_FILE "$cli_prompt_file" "")"
 prompt_extra="$(_resolve AITASK_PROMPT_EXTRA "$cli_prompt_extra" "")"
 
@@ -444,6 +565,14 @@ case "$agent_type" in
     claude|opencode) ;;
     *) _die "Invalid --agent-type '$agent_type' - must be 'claude' or 'opencode'" ;;
 esac
+# Validate --termic early so a typo in a config file fails fast. Empty
+# (the default) means the feature is off - no further checks needed.
+if [ -n "$termic_action" ] ; then
+    case "$termic_action" in
+        new-task) ;;
+        *) _die "Invalid --termic '$termic_action' - currently the only supported action is 'new-task'" ;;
+    esac
+fi
 if [ "$cmd" = "start" ] ; then
     command -v "$agent_type" >/dev/null 2>&1 || _die "Required command '$agent_type' not found in PATH (selected via --agent-type)"
 fi
@@ -751,6 +880,16 @@ chmod +x "$launcher_file"
 
 _info "Starting tmux session '$session'..."
 tmux new-session -d -s "$session" -c "$worktree_dir" "$launcher_file"
+
+# Opt-in: register the just-created worktree + AI session as a Termic task.
+# Best-effort - any failure (termic not installed, session not yet
+# registered, etc.) is a warning, not an error. The tmux session above is
+# already usable regardless of whether this succeeds.
+if [ -n "$termic_action" ] ; then
+    case "$termic_action" in
+        new-task) _do_termic_new_task "$worktree_dir" "$agent_type" ;;
+    esac
+fi
 
 _info "Done. Attach with: tmux attach -t $session"
 _info "(Whether your terminal/IDE app auto-discovers this tmux session is unverified - attach manually if not. See README.md.)"
