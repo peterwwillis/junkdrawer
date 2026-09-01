@@ -63,6 +63,17 @@
 # role name for a repo with an AWS/terraform component, e.g.:
 # AITASK_AWS_ROLE_READONLY="ReadOnly-NoSecrets"
 
+# Credentials loader: a shell script SOURCED (not exec'd) by the agent's
+# shell right before the agent launches, to inject whatever credentials the
+# task needs. The agent now starts from an empty environment (env -i) -
+# nothing from your interactive terminal leaks in - so this is the
+# supported way to provide any. Off by default. Trusted input like
+# AITASK_PROMPT_FILE; runs inside the sandbox, so give it network via
+# AITASK_ALLOWED_HOSTS if it needs to fetch tokens. AWS ReadOnly mode's
+# own env exports are applied after it and take precedence. See
+# --creds-loader in `ai-task.sh --help`.
+# AITASK_CREDS_LOADER="$HOME/.config/ai-task/creds.sh"
+
 # Comma-separated extra hosts for the sandbox network allowlist, on top of
 # the built-in defaults (github.com, linear.app, + AWS hosts if AWS
 # ReadOnly mode is on).

@@ -6,9 +6,12 @@
 # `start <TICKET-ID>` creates an isolated git worktree for a specific one,
 # optionally pre-authenticates read-only AWS credentials (AWS ReadOnly
 # mode - opt-in via --aws-readonly-role ROLE / AITASK_AWS_ROLE_READONLY, or
-# `aws-preauth` command), and
-# launches an autonomous AI session in tmux - `claude` (default) or
-# `opencode` (--agent-type opencode).
+# `aws-preauth` command), and launches an autonomous AI session in tmux -
+# `claude` (default) or `opencode` (--agent-type opencode). The agent runs
+# in a pristine login shell (env -i, HOME/TERM/LANG only) so nothing from
+# your interactive terminal - exported credentials included - leaks in;
+# --creds-loader / AITASK_CREDS_LOADER points at a script that gets sourced
+# right before the agent launches to inject whatever credentials it needs.
 #
 # Requires: the `linear` CLI (authenticated), jq. `start` additionally
 # requires git, tmux, and the CLI for whichever --agent-type is selected
@@ -318,6 +321,20 @@ has an AITASK_<NAME> env var equivalent):
                                           settings plus the required
                                           opencode-sandbox plugin entry -
                                           see README.md)
+  --creds-loader PATH         Path to a shell script sourced (not exec'd)
+                              by the agent's shell right before the agent
+                              launches, to inject credentials the task
+                              needs (cloud tokens, registry logins, ...).
+                              The agent starts from an empty environment
+                              (env -i; only HOME/TERM/locale vars and the
+                              login shell's profiles carry through), so
+                              nothing leaks in from this terminal unless
+                              you want it to - set it up here instead.
+                              Trusted input, same as --prompt-file. Runs
+                              inside the sandbox: if it needs network
+                              access, add the hosts via --allowed-hosts.
+                              AWS ReadOnly mode's own env exports are
+                              applied after it, so they take precedence.
   --aws-readonly-role ROLE     AWS ReadOnly mode: name of the read-only
                                AWS role (the ':Role' suffix of your aws-sso
                                profiles, e.g. "ReadOnly-NoSecrets") to
@@ -362,7 +379,7 @@ Environment variables: AITASK_TEAM, AITASK_LABEL, AITASK_ASSIGNEE,
 AITASK_NO_ASSIGNEE, AITASK_STATE, AITASK_CYCLE, AITASK_SORT, AITASK_PRIORITY,
 AITASK_WORKTREE_ROOT, AITASK_IN_PROGRESS_STATE, AITASK_BLOCKED_STATE,
 AITASK_AGENT_TYPE, AITASK_PERMISSION_MODE, AITASK_MODEL, AITASK_AGENT_SETTINGS,
-AITASK_AWS_ROLE_READONLY, AITASK_ALLOWED_HOSTS, AITASK_TERMIC,
+AITASK_AWS_ROLE_READONLY, AITASK_CREDS_LOADER, AITASK_ALLOWED_HOSTS, AITASK_TERMIC,
 AITASK_PROMPT_FILE, AITASK_PROMPT_EXTRA.
 
 AITASK_TEAM falls back to linear-cli's own LINEAR_TEAM_ID; AITASK_SORT
@@ -468,7 +485,7 @@ ticket_id=""
 _AITASK_VARS="AITASK_TEAM AITASK_LABEL AITASK_ASSIGNEE AITASK_NO_ASSIGNEE AITASK_STATE AITASK_CYCLE
 AITASK_SORT AITASK_PRIORITY AITASK_WORKTREE_ROOT AITASK_IN_PROGRESS_STATE AITASK_BLOCKED_STATE
 AITASK_AGENT_TYPE AITASK_PERMISSION_MODE AITASK_MODEL AITASK_AGENT_SETTINGS AITASK_AWS_ROLE_READONLY
-AITASK_ALLOWED_HOSTS AITASK_TERMIC AITASK_PROMPT_FILE AITASK_PROMPT_EXTRA"
+AITASK_CREDS_LOADER AITASK_ALLOWED_HOSTS AITASK_TERMIC AITASK_PROMPT_FILE AITASK_PROMPT_EXTRA"
 for v in $_AITASK_VARS ; do
     eval "orig_$v=\"\${$v:-}\""
 done
@@ -526,7 +543,7 @@ _query_ready_issues() {
 cli_team="" cli_label="" cli_assignee="" cli_no_assignee="" cli_state="" cli_cycle="" cli_sort=""
 cli_priority="" cli_worktree_root="" cli_in_progress_state="" cli_blocked_state=""
 cli_agent_type="" cli_permission_mode="" cli_model="" cli_agent_settings="" cli_aws_readonly="" cli_allowed_hosts="" cli_termic="" cli_prompt_file=""
-cli_prompt_extra="" dry_run=0 first=0
+cli_prompt_extra="" cli_creds_loader="" dry_run=0 first=0
 
 while [ $# -gt 0 ] ; do
     case "$1" in
@@ -545,6 +562,7 @@ while [ $# -gt 0 ] ; do
         --permission-mode)      shift; cli_permission_mode="$1" ;;
         --model)               shift; cli_model="$1" ;;
         --agent-settings)      shift; cli_agent_settings="$1" ;;
+        --creds-loader)         shift; cli_creds_loader="$1" ;;
         --aws-readonly-role)    shift; cli_aws_readonly="$1" ;;
         --no-aws-readonly-role) cli_aws_readonly="__OFF__" ;;
         --allowed-hosts)        shift; cli_allowed_hosts="$1" ;;
@@ -580,6 +598,7 @@ agent_type="$(_resolve AITASK_AGENT_TYPE "$cli_agent_type" "claude")"
 permission_mode="$(_resolve AITASK_PERMISSION_MODE "$cli_permission_mode" "auto")"
 model="$(_resolve AITASK_MODEL "$cli_model" "")"
 agent_settings="$(_resolve AITASK_AGENT_SETTINGS "$cli_agent_settings" "")"
+creds_loader="$(_resolve AITASK_CREDS_LOADER "$cli_creds_loader" "")"
 aws_role_readonly="$(_resolve AITASK_AWS_ROLE_READONLY "$cli_aws_readonly" "")"
 # __OFF__ is the --no-aws-readonly-role sentinel: an explicit CLI "off" must win
 # over env/config, but _resolve treats empty as "unset" so it can't express
@@ -680,6 +699,7 @@ fi
 
 [ -z "$agent_settings" ] || [ -r "$agent_settings" ] || _die "--agent-settings '$agent_settings' not found or not readable"
 [ -z "$agent_settings" ] || jq empty "$agent_settings" 2>/dev/null || _die "--agent-settings '$agent_settings' is not valid JSON"
+[ -z "$creds_loader" ] || [ -r "$creds_loader" ] || _die "--creds-loader '$creds_loader' not found or not readable"
 
 issue_json="$(linear issue view "$ticket_id" --json)" || _die "Could not fetch issue '$ticket_id' from Linear."
 identifier="$(printf '%s' "$issue_json" | jq -r '.identifier')"
@@ -700,6 +720,7 @@ _info "Session:   $session"
 _info "Agent:     $agent_type"
 _info "Model:     ${model:-<agent default>}"
 _info "AWS ReadOnly role: ${aws_role_readonly:-<off>}"
+_info "Creds loader: ${creds_loader:-<none>}"
 
 if [ "$dry_run" = "1" ] ; then
     _info "(dry run) Would create worktree, mark issue in progress, and start tmux session."
@@ -879,7 +900,28 @@ printf '%s' "$prompt" > "$prompt_file_out"
 launcher_file="$worktree_dir/.aitask-launch.sh"
 {
     printf '#!/usr/bin/env bash\n'
+    # The pane itself can't be started with a clean env portably (tmux
+    # mangles multi-word new-session commands differently across
+    # versions), so the launcher re-execs itself under `env -i bash -l`
+    # instead: agent ends up in a pristine login shell regardless of
+    # whatever the launching terminal had exported. Only HOME (needed),
+    # TERM (needed by agent CLIs; tmux default if unset) and locale vars
+    # pass through; PATH is rebuilt by /etc/profile + ~/.bash_profile.
+    # NOTE: if your login profiles export credentials, they come back by
+    # design - this isolates from the session's shell, not from your
+    # machine's startup files.
+    cat <<'EOLAUNCHER'
+if [ "${AITASK_CLEAN_ENV:-}" != "1" ] ; then
+    clean_env=(env -i HOME="$HOME" AITASK_CLEAN_ENV=1 "TERM=${TERM:-xterm-256color}")
+    [ -z "${LANG:-}" ] || clean_env+=("LANG=$LANG")
+    [ -z "${LC_ALL:-}" ] || clean_env+=("LC_ALL=$LC_ALL")
+    exec "${clean_env[@]}" bash -l "$0"
+fi
+EOLAUNCHER
     printf 'cd %q\n' "$worktree_dir"
+    # Loader runs before ai-task's own exports below, so the sandbox's AWS
+    # config pinning / OPENCODE_* vars always have the final say.
+    [ -z "$creds_loader" ] || printf '. %q\n' "$creds_loader"
     if [ -n "$aws_role_readonly" ] ; then
         printf 'unset AWS_PROFILE\n'
         printf 'export AWS_CONFIG_FILE=%q\n' "$aws_dir/config"
