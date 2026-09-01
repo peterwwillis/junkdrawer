@@ -4,8 +4,9 @@
 # See README.md in this directory for full design notes and gotchas. Quick
 # summary: `list` shows ready-to-work Linear issues matching your filters;
 # `start <TICKET-ID>` creates an isolated git worktree for a specific one,
-# pre-authenticates read-only AWS credentials by default (AWS ReadOnly
-# mode - --aws-readonly / --no-aws-readonly / `aws-preauth` command), and
+# optionally pre-authenticates read-only AWS credentials (AWS ReadOnly
+# mode - opt-in via --aws-readonly-role ROLE / AITASK_AWS_ROLE_READONLY, or
+# `aws-preauth` command), and
 # launches an autonomous AI session in tmux - `claude` (default) or
 # `opencode` (--agent-type opencode).
 #
@@ -22,10 +23,11 @@ _err()  { printf "%s: Error: %s\n" "$SCRIPT" "$*" 1>&2 ; }
 _info() { printf "%s: Info: %s\n" "$SCRIPT" "$*" 1>&2 ; }
 _die()  { _err "$@"; exit 1; }
 
-# _cmd_aws_preauth OUTDIR
+# _cmd_aws_preauth OUTDIR ROLE
 #
-# Mints short-lived STS credentials for the ':ReadOnly-NoSecrets' role in
-# every AWS account you have access to (via aws-sso), and writes them as an
+# Mints short-lived STS credentials for the given read-only role name
+# (the ':Role' suffix of your aws-sso profiles, e.g. 'ReadOnly-NoSecrets')
+# in every AWS account you have access to (via aws-sso), and writes them as an
 # isolated, plain-static-credential AWS config/credentials file pair under
 # OUTDIR. These files never reference aws-sso or credential_process - they're
 # just static keys, so a sandboxed session using them has no path to
@@ -35,18 +37,20 @@ _die()  { _err "$@"; exit 1; }
 # this credential type (SSO-federated / role-chained session credentials
 # are always capped at 1hr, regardless of the permission set's configured
 # Session Duration) - not something this script, aws-sso, or any client can
-# configure around. Just re-run `ai-task.sh aws-preauth OUTDIR` to refresh.
+# configure around. Just re-run `ai-task.sh aws-preauth OUTDIR ROLE` to refresh.
 #
 # `ai-task.sh start` calls this for you at worktree-creation time whenever
-# AWS ReadOnly mode is on (the default - see --no-aws-readonly). Run it
+# a read-only AWS role is configured (AITASK_AWS_ROLE_READONLY /
+# --aws-readonly-role; off by default). Run it
 # directly to refresh an existing worktree's expired credentials
 # without recreating the task. Never run it from inside an ai-task session
 # itself - it's the trusted side of the boundary, and needs your own valid
 # `aws-sso login` session to work.
 _cmd_aws_preauth() {
-    local outdir="$1" credfile conffile readme region profiles count profile
+    local outdir="$1" role="$2" credfile conffile readme region profiles count profile
     local creds_json access_key secret_key session_token expiration
 
+    [ -n "$role" ] || _die "AWS role name must not be empty"
     command -v aws-sso >/dev/null 2>&1 || _die "aws-sso not found in PATH"
     command -v jq >/dev/null 2>&1 || _die "jq not found in PATH"
 
@@ -61,9 +65,9 @@ _cmd_aws_preauth() {
     region="$(awk '/DefaultRegion/{print $2}' ~/.config/aws-sso/config.yaml 2>/dev/null)"
     region="${region:-us-east-1}"
 
-    profiles="$(aws configure list-profiles | grep ':ReadOnly-NoSecrets$' || true)"
+    profiles="$(aws configure list-profiles | grep ":$role\$" || true)"
     if [ -z "$profiles" ] ; then
-        _err "No ':ReadOnly-NoSecrets' profiles found."
+        _err "No profiles ending in ':$role' found."
         _die "Try: aws-sso login && aws-sso setup profiles --force"
     fi
 
@@ -76,10 +80,10 @@ _cmd_aws_preauth() {
         printf '`credential_process`, no reference to aws-sso at all.\n\n'
         printf 'Credentials expire in about an hour (an AWS platform limit for this\n'
         printf 'credential type, not something configurable - see README.md). Re-run\n'
-        printf '`ai-task.sh aws-preauth %s` to refresh.\n\n' "$outdir"
+        printf '`ai-task.sh aws-preauth %s %s` to refresh.\n\n' "$outdir" "$role"
         printf 'Before running AWS or terraform commands in a given\n'
         printf '`env/aws/<tenant>/...` directory, set the matching profile first, e.g.:\n\n'
-        printf '    export AWS_PROFILE="<tenant>:ReadOnly-NoSecrets"\n\n'
+        printf '    export AWS_PROFILE="<tenant>:%s"\n\n' "$role"
         printf 'Available profiles:\n'
     } > "$readme"
 
@@ -243,9 +247,10 @@ Commands:
                          Linear issue (e.g. \`$SCRIPT start DVOPS-1234\`).
                          Pass --first instead of a ticket id to pick the
                          top match from the same filters \`list\` uses.
-  aws-preauth OUTDIR      Mint read-only AWS credentials into OUTDIR. Used
-                         internally by AWS ReadOnly mode (on by default -
-                         see --no-aws-readonly); run it directly to
+  aws-preauth OUTDIR ROLE  Mint read-only AWS credentials for every account
+                          with a ':ROLE' profile into OUTDIR. Used
+                          internally by AWS ReadOnly mode (opt-in -
+                          see --aws-readonly-role); run it directly to
                          refresh an existing worktree's expired
                          credentials (they last about an hour - an AWS
                          platform limit, not configurable - see README.md).
@@ -313,12 +318,16 @@ has an AITASK_<NAME> env var equivalent):
                                           settings plus the required
                                           opencode-sandbox plugin entry -
                                           see README.md)
-  --aws-readonly               AWS ReadOnly mode: pre-auth read-only AWS
-                              credentials + AWS-specific prompt/sandbox
-                              additions (default: on)
-  --no-aws-readonly           Force AWS ReadOnly mode off, overriding
-                              config - use this for a repo with no
-                              cloud/AWS component
+  --aws-readonly-role ROLE     AWS ReadOnly mode: name of the read-only
+                               AWS role (the ':Role' suffix of your aws-sso
+                               profiles, e.g. "ReadOnly-NoSecrets") to
+                               pre-auth credentials for, plus AWS-specific
+                               prompt/sandbox additions. Unset or empty (the
+                               default) turns the feature off.
+  --no-aws-readonly-role       Force AWS ReadOnly mode off, overriding
+                               config/env - use this when your config file
+                               sets a role but this task needs no AWS
+                               access
   --allowed-hosts HOSTS       Comma-separated extra sandbox network
                               allowlist entries
   --termic ACTION            After the tmux + agent are up, register the
@@ -353,7 +362,7 @@ Environment variables: AITASK_TEAM, AITASK_LABEL, AITASK_ASSIGNEE,
 AITASK_NO_ASSIGNEE, AITASK_STATE, AITASK_CYCLE, AITASK_SORT, AITASK_PRIORITY,
 AITASK_WORKTREE_ROOT, AITASK_IN_PROGRESS_STATE, AITASK_BLOCKED_STATE,
 AITASK_AGENT_TYPE, AITASK_PERMISSION_MODE, AITASK_MODEL, AITASK_AGENT_SETTINGS,
-AITASK_AWS_READONLY, AITASK_ALLOWED_HOSTS, AITASK_TERMIC,
+AITASK_AWS_ROLE_READONLY, AITASK_ALLOWED_HOSTS, AITASK_TERMIC,
 AITASK_PROMPT_FILE, AITASK_PROMPT_EXTRA.
 
 AITASK_TEAM falls back to linear-cli's own LINEAR_TEAM_ID; AITASK_SORT
@@ -385,6 +394,23 @@ fi
 # worktree path is stable regardless of which worktree this is run from.
 REPO_NAME="$(basename -s .git "$(git -C "$ROOTDIR" remote get-url origin)")"
 
+# _detect_main_branch -> prints origin's default branch name (e.g. "main",
+# "master", "trunk"). Tries the cheap local answer first
+# (refs/remotes/origin/HEAD, set by `git clone`/`git remote set-head`); if
+# that's missing (e.g. a fresh clone that never fetched HEAD), asks the
+# remote directly via `git ls-remote --symref`, which requires no local
+# state and doesn't mutate anything. Falls back to "main" only if both fail.
+_detect_main_branch() {
+    local ref
+    ref="$(git -C "$ROOTDIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)" \
+        && { printf '%s' "${ref#origin/}"; return; }
+    ref="$(git -C "$ROOTDIR" ls-remote --symref origin HEAD 2>/dev/null \
+        | awk '/^ref:/{print $2}' | sed 's#refs/heads/##')"
+    [ -n "$ref" ] && { printf '%s' "$ref"; return; }
+    printf 'main'
+}
+MAIN_BRANCH="$(_detect_main_branch)"
+
 # ── Subcommand dispatch ─────────────────────────────────────────────────────
 cmd=""
 if [ $# -gt 0 ] ; then
@@ -398,8 +424,8 @@ fi
 case "$cmd" in
     list|start) ;;
     aws-preauth)
-        [ $# -eq 1 ] || _die "Usage: $SCRIPT aws-preauth <output-dir>"
-        _cmd_aws_preauth "$1"
+        [ $# -eq 2 ] || _die "Usage: $SCRIPT aws-preauth <output-dir> <aws-role-name>"
+        _cmd_aws_preauth "$1" "$2"
         exit 0
         ;;
     "")
@@ -440,10 +466,9 @@ ticket_id=""
 # files, so a persisted config can't clobber something you explicitly
 # exported just for this run.
 _AITASK_VARS="AITASK_TEAM AITASK_LABEL AITASK_ASSIGNEE AITASK_NO_ASSIGNEE AITASK_STATE AITASK_CYCLE
-AITASK_SORT AITASK_PRIORITY AITASK_WORKTREE_ROOT AITASK_IN_PROGRESS_STATE
-AITASK_BLOCKED_STATE AITASK_AGENT_TYPE AITASK_PERMISSION_MODE AITASK_MODEL AITASK_AGENT_SETTINGS
-AITASK_AWS_READONLY AITASK_ALLOWED_HOSTS AITASK_TERMIC
-AITASK_PROMPT_FILE AITASK_PROMPT_EXTRA"
+AITASK_SORT AITASK_PRIORITY AITASK_WORKTREE_ROOT AITASK_IN_PROGRESS_STATE AITASK_BLOCKED_STATE
+AITASK_AGENT_TYPE AITASK_PERMISSION_MODE AITASK_MODEL AITASK_AGENT_SETTINGS AITASK_AWS_ROLE_READONLY
+AITASK_ALLOWED_HOSTS AITASK_TERMIC AITASK_PROMPT_FILE AITASK_PROMPT_EXTRA"
 for v in $_AITASK_VARS ; do
     eval "orig_$v=\"\${$v:-}\""
 done
@@ -520,8 +545,8 @@ while [ $# -gt 0 ] ; do
         --permission-mode)      shift; cli_permission_mode="$1" ;;
         --model)               shift; cli_model="$1" ;;
         --agent-settings)      shift; cli_agent_settings="$1" ;;
-        --aws-readonly)         cli_aws_readonly="true" ;;
-        --no-aws-readonly)      cli_aws_readonly="false" ;;
+        --aws-readonly-role)    shift; cli_aws_readonly="$1" ;;
+        --no-aws-readonly-role) cli_aws_readonly="__OFF__" ;;
         --allowed-hosts)        shift; cli_allowed_hosts="$1" ;;
         --termic)               shift; cli_termic="$1" ;;
         --prompt-file)          shift; cli_prompt_file="$1" ;;
@@ -555,7 +580,11 @@ agent_type="$(_resolve AITASK_AGENT_TYPE "$cli_agent_type" "claude")"
 permission_mode="$(_resolve AITASK_PERMISSION_MODE "$cli_permission_mode" "auto")"
 model="$(_resolve AITASK_MODEL "$cli_model" "")"
 agent_settings="$(_resolve AITASK_AGENT_SETTINGS "$cli_agent_settings" "")"
-aws_readonly="$(_resolve AITASK_AWS_READONLY "$cli_aws_readonly" "true")"
+aws_role_readonly="$(_resolve AITASK_AWS_ROLE_READONLY "$cli_aws_readonly" "")"
+# __OFF__ is the --no-aws-readonly-role sentinel: an explicit CLI "off" must win
+# over env/config, but _resolve treats empty as "unset" so it can't express
+# that directly. Empty (the default) means the feature is off.
+[ "$aws_role_readonly" != "__OFF__" ] || aws_role_readonly=""
 allowed_hosts_extra="$(_resolve AITASK_ALLOWED_HOSTS "$cli_allowed_hosts" "")"
 termic_action="$(_resolve AITASK_TERMIC "$cli_termic" "")"
 prompt_file="$(_resolve AITASK_PROMPT_FILE "$cli_prompt_file" "")"
@@ -670,7 +699,7 @@ _info "Worktree:  $worktree_dir"
 _info "Session:   $session"
 _info "Agent:     $agent_type"
 _info "Model:     ${model:-<agent default>}"
-_info "AWS ReadOnly mode: $aws_readonly"
+_info "AWS ReadOnly role: ${aws_role_readonly:-<off>}"
 
 if [ "$dry_run" = "1" ] ; then
     _info "(dry run) Would create worktree, mark issue in progress, and start tmux session."
@@ -687,19 +716,19 @@ fi
 
 # ── Create the worktree ─────────────────────────────────────────────────────
 
-_info "Fetching latest origin/main..."
-git -C "$ROOTDIR" fetch origin main
+_info "Fetching latest origin/$MAIN_BRANCH..."
+git -C "$ROOTDIR" fetch origin "$MAIN_BRANCH"
 
 _info "Creating worktree..."
 mkdir -p "$worktree_root"
-git -C "$ROOTDIR" worktree add -b "$branch" "$worktree_dir" origin/main
+git -C "$ROOTDIR" worktree add -b "$branch" "$worktree_dir" "origin/$MAIN_BRANCH"
 
 # ── AWS ReadOnly mode: read-only AWS credentials ────────────────────────────
 
 aws_dir="$worktree_dir/.aitask-aws"
-if [ "$aws_readonly" = "true" ] ; then
+if [ -n "$aws_role_readonly" ] ; then
     _info "Minting read-only AWS credentials for the sandboxed session..."
-    _cmd_aws_preauth "$aws_dir"
+    _cmd_aws_preauth "$aws_dir" "$aws_role_readonly"
 fi
 
 # ── Sandbox config ───────────────────────────────────────────────────────────
@@ -708,7 +737,7 @@ fi
 # backend's isolation mechanism actually is and its known gaps).
 
 hosts=(github.com api.github.com raw.githubusercontent.com linear.app api.linear.app)
-[ "$aws_readonly" != "true" ] || hosts+=("*.amazonaws.com" "169.254.169.254" "169.254.170.2")
+[ -z "$aws_role_readonly" ] || hosts+=("*.amazonaws.com" "169.254.169.254" "169.254.170.2")
 if [ -n "$allowed_hosts_extra" ] ; then
     IFS=',' read -r -a extra_hosts <<< "$allowed_hosts_extra"
     hosts+=("${extra_hosts[@]}")
@@ -716,7 +745,7 @@ fi
 hosts_json="$(printf '%s\n' "${hosts[@]}" | jq -R . | jq -s .)"
 
 cred_files=("~/.ssh")
-[ "$aws_readonly" != "true" ] || cred_files+=("~/.config/aws-sso" "~/.aws")
+[ -z "$aws_role_readonly" ] || cred_files+=("~/.config/aws-sso" "~/.aws")
 
 if [ "$agent_type" = "claude" ] ; then
     _info "Writing sandbox config for the worktree (.claude/settings.local.json)..."
@@ -815,10 +844,10 @@ Never force-push, never run destructive git operations.
 EOP
 fi
 
-if [ "$aws_readonly" = "true" ] ; then
+if [ -n "$aws_role_readonly" ] ; then
     prompt="$prompt
 
-AWS ReadOnly mode is on for this repo/session:
+AWS ReadOnly mode is on for this repo/session (role: $aws_role_readonly):
 - AWS access is READ-ONLY only - see .aitask-aws/README.md for the
   available profiles and how to select one (set AWS_PROFILE before
   running AWS/terraform commands in a given env/aws/<tenant>/ directory).
@@ -831,8 +860,8 @@ AWS ReadOnly mode is on for this repo/session:
   \`aws-sso login\` or any other re-auth yourself - it's intentionally
   unavailable in this sandbox and won't work. Instead: keep making progress
   on anything that doesn't need AWS, and post a Linear comment asking the
-  user to run \`ai-task.sh aws-preauth\` on this worktree's .aitask-aws/
-  directory to refresh your credentials, then continue once they confirm.
+  user to run \`ai-task.sh aws-preauth <this worktree>/.aitask-aws $aws_role_readonly\`
+  to refresh your credentials, then continue once they confirm.
 - Follow this repo's CLAUDE.md and .claude/rules/, especially the
   terraformsh/make wrapper workflow - never run terraform directly."
 fi
@@ -851,7 +880,7 @@ launcher_file="$worktree_dir/.aitask-launch.sh"
 {
     printf '#!/usr/bin/env bash\n'
     printf 'cd %q\n' "$worktree_dir"
-    if [ "$aws_readonly" = "true" ] ; then
+    if [ -n "$aws_role_readonly" ] ; then
         printf 'unset AWS_PROFILE\n'
         printf 'export AWS_CONFIG_FILE=%q\n' "$aws_dir/config"
         printf 'export AWS_SHARED_CREDENTIALS_FILE=%q\n' "$aws_dir/credentials"

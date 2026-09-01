@@ -56,11 +56,12 @@
 # a list of what a few common tools use.
 # AITASK_WORKTREE_ROOT="$HOME/.local/ai-task/worktrees/my-repo"
 
-# AWS ReadOnly mode: pre-auth read-only AWS credentials + AWS-specific
-# prompt and sandbox additions (see the aws-preauth command). ON BY
-# DEFAULT. Set false for a repo with no AWS/terraform component - the
-# script works fine without it, it just won't touch AWS at all.
-# AITASK_AWS_READONLY="false"
+# AWS ReadOnly mode: name of the read-only AWS role (the ':Role' suffix of
+# your aws-sso profiles) to pre-auth credentials for, plus AWS-specific
+# prompt and sandbox additions (see the aws-preauth command). OFF BY
+# DEFAULT - unset or empty means the script won't touch AWS at all. Set a
+# role name for a repo with an AWS/terraform component, e.g.:
+# AITASK_AWS_ROLE_READONLY="ReadOnly-NoSecrets"
 
 # Comma-separated extra hosts for the sandbox network allowlist, on top of
 # the built-in defaults (github.com, linear.app, + AWS hosts if AWS
