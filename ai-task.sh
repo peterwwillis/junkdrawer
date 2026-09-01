@@ -22,9 +22,9 @@ set -eu
 SCRIPT="$(basename "$0")"
 REPO_NAME="<repo>"   # placeholder; replaced once we confirm we're in a git repo
 
-_err()  { printf "%s: Error: %s\n" "$SCRIPT" "$*" 1>&2 ; }
-_info() { printf "%s: Info: %s\n" "$SCRIPT" "$*" 1>&2 ; }
-_die()  { _err "$@"; exit 1; }
+_err ()  { printf "%s: Error: %s\n" "$SCRIPT" "$*" 1>&2 ; }
+_info () { printf "%s: Info: %s\n" "$SCRIPT" "$*" 1>&2 ; }
+_die ()  { _err "$@"; exit 1; }
 
 # _cmd_aws_preauth OUTDIR ROLE
 #
@@ -49,7 +49,7 @@ _die()  { _err "$@"; exit 1; }
 # without recreating the task. Never run it from inside an ai-task session
 # itself - it's the trusted side of the boundary, and needs your own valid
 # `aws-sso login` session to work.
-_cmd_aws_preauth() {
+_cmd_aws_preauth () {
     local outdir="$1" role="$2" credfile conffile readme region profiles count profile
     local creds_json access_key secret_key session_token expiration
 
@@ -140,7 +140,7 @@ _cmd_aws_preauth() {
 # scopes the listing to background and interactive sessions whose working
 # directory is the given worktree. We filter to kind == "interactive"
 # because this script runs `claude` directly (not as a background agent).
-_get_claude_session_id() {
+_get_claude_session_id () {
     local worktree_dir="$1"
     claude agents --json --cwd "$worktree_dir" 2>/dev/null \
         | jq -r '[.[] | select(.kind == "interactive")]
@@ -156,7 +156,7 @@ _get_claude_session_id() {
 # by the directory the agent was started in. The script runs opencode
 # non-interactively (`opencode run --auto ...`), which still creates a
 # session row in the DB.
-_get_opencode_session_id() {
+_get_opencode_session_id () {
     local worktree_dir="$1"
     opencode session list --format json 2>/dev/null \
         | jq -r --arg d "$worktree_dir" \
@@ -171,7 +171,7 @@ _get_opencode_session_id() {
 # printing the first non-empty result. Empty + non-zero return means
 # "timed out". Both agent CLIs register their session lazily after the
 # process spawns, so a fresh launch needs a moment to appear.
-_wait_for_session_id() {
+_wait_for_session_id () {
     local agent_type="$1" worktree_dir="$2"
     local session_id attempt
     for attempt in $(seq 1 30) ; do
@@ -198,7 +198,7 @@ _wait_for_session_id() {
 # running by this point, so a missing Termic install or a slow agent
 # lookup shouldn't break an otherwise-successful run. The user is told
 # the exact manual command to retry on their own.
-_do_termic_new_task() {
+_do_termic_new_task () {
     local worktree_dir="$1" agent_type="$2"
     local session_id termic_json
 
@@ -234,7 +234,68 @@ _do_termic_new_task() {
     _info "Open with: termic open $task_name"
 }
 
-_usage() {
+# _detect_main_branch -> prints origin's default branch name (e.g. "main",
+# "master", "trunk"). Tries the cheap local answer first
+# (refs/remotes/origin/HEAD, set by `git clone`/`git remote set-head`); if
+# that's missing (e.g. a fresh clone that never fetched HEAD), asks the
+# remote directly via `git ls-remote --symref`, which requires no local
+# state and doesn't mutate anything. Falls back to "main" only if both fail.
+_detect_main_branch () {
+    local ref
+    ref="$(git -C "$ROOTDIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)" \
+        && { printf '%s' "${ref#origin/}"; return; }
+    ref="$(git -C "$ROOTDIR" ls-remote --symref origin HEAD 2>/dev/null \
+        | awk '/^ref:/{print $2}' | sed 's#refs/heads/##')"
+    [ -n "$ref" ] && { printf '%s' "$ref"; return; }
+    printf 'main'
+}
+
+# Loads shell script into current session if it exists
+_loadconf () { [ ! -e "$1" ] || . "$1" ; }
+
+# _resolve VAR CLIVAL DEFAULT [FALLBACK_ENV_VAR ...]
+_resolve () {
+    local var="$1" cli="$2" default="$3" orig="orig_$1" fb
+    shift 3
+    [ -z "$cli" ] || { printf '%s' "$cli"; return; }
+    [ -z "${!orig:-}" ] || { printf '%s' "${!orig}"; return; }
+    [ -z "${!var:-}" ] || { printf '%s' "${!var}"; return; }
+    for fb in "$@" ; do
+        [ -z "${!fb:-}" ] || { printf '%s' "${!fb}"; return; }
+    done
+    printf '%s' "$default"
+}
+
+# _query_ready_issues -> prints a JSON array of matching, unblocked issues
+# (per the resolved team/label/state/cycle/assignee_args/priority/sort) to
+# stdout. Used by both `list` and `start --first`, so both pick from
+# exactly the same candidate set. An issue is "blocked" if any
+# inverseRelation of type "blocks" points at an issue that is not
+# completed/canceled (i.e. still open).
+_query_ready_issues () {
+    local query_json
+    query_json="$(linear issue query --json \
+        --team "$team" \
+        --label "$label" \
+        --state "$state" \
+        --cycle "$cycle" \
+        "${assignee_args[@]}" \
+        --sort "$sort" \
+        --limit 50)"
+    printf '%s' "$query_json" | jq -c --arg priority "$priority" '
+        [.nodes[] | select(
+            ($priority == "" or (.priority | tostring) == $priority)
+            and ([.inverseRelations.nodes[]?
+                | select(.type == "blocks"
+                    and .issue.state.type != "completed"
+                    and .issue.state.type != "canceled")
+             ] | length) == 0
+        )]
+    '
+}
+
+
+_usage () {
     cat <<EOUSAGE
 Usage: $SCRIPT COMMAND [OPTIONS]
 
@@ -411,21 +472,6 @@ fi
 # worktree path is stable regardless of which worktree this is run from.
 REPO_NAME="$(basename -s .git "$(git -C "$ROOTDIR" remote get-url origin)")"
 
-# _detect_main_branch -> prints origin's default branch name (e.g. "main",
-# "master", "trunk"). Tries the cheap local answer first
-# (refs/remotes/origin/HEAD, set by `git clone`/`git remote set-head`); if
-# that's missing (e.g. a fresh clone that never fetched HEAD), asks the
-# remote directly via `git ls-remote --symref`, which requires no local
-# state and doesn't mutate anything. Falls back to "main" only if both fail.
-_detect_main_branch() {
-    local ref
-    ref="$(git -C "$ROOTDIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)" \
-        && { printf '%s' "${ref#origin/}"; return; }
-    ref="$(git -C "$ROOTDIR" ls-remote --symref origin HEAD 2>/dev/null \
-        | awk '/^ref:/{print $2}' | sed 's#refs/heads/##')"
-    [ -n "$ref" ] && { printf '%s' "$ref"; return; }
-    printf 'main'
-}
 MAIN_BRANCH="$(_detect_main_branch)"
 
 # ── Subcommand dispatch ─────────────────────────────────────────────────────
@@ -493,52 +539,12 @@ done
 # Config file name can be either `ai-task.conf` or `.ai-taskrc` (rc-file
 # style), checked at both the home and project-local scope. Later files
 # win if more than one exists.
-_loadconf() { [ ! -e "$1" ] || . "$1" ; }
 _loadconf "$HOME/.config/ai-task/ai-task.conf"
 _loadconf "$HOME/.ai-taskrc"
 _loadconf "$(pwd)/ai-task.conf"
 _loadconf "$(pwd)/.ai-taskrc"
 
-# _resolve VAR CLIVAL DEFAULT [FALLBACK_ENV_VAR ...]
-_resolve() {
-    local var="$1" cli="$2" default="$3" orig="orig_$1" fb
-    shift 3
-    [ -z "$cli" ] || { printf '%s' "$cli"; return; }
-    [ -z "${!orig:-}" ] || { printf '%s' "${!orig}"; return; }
-    [ -z "${!var:-}" ] || { printf '%s' "${!var}"; return; }
-    for fb in "$@" ; do
-        [ -z "${!fb:-}" ] || { printf '%s' "${!fb}"; return; }
-    done
-    printf '%s' "$default"
-}
 
-# _query_ready_issues -> prints a JSON array of matching, unblocked issues
-# (per the resolved team/label/state/cycle/assignee_args/priority/sort) to
-# stdout. Used by both `list` and `start --first`, so both pick from
-# exactly the same candidate set. An issue is "blocked" if any
-# inverseRelation of type "blocks" points at an issue that is not
-# completed/canceled (i.e. still open).
-_query_ready_issues() {
-    local query_json
-    query_json="$(linear issue query --json \
-        --team "$team" \
-        --label "$label" \
-        --state "$state" \
-        --cycle "$cycle" \
-        "${assignee_args[@]}" \
-        --sort "$sort" \
-        --limit 50)"
-    printf '%s' "$query_json" | jq -c --arg priority "$priority" '
-        [.nodes[] | select(
-            ($priority == "" or (.priority | tostring) == $priority)
-            and ([.inverseRelations.nodes[]?
-                | select(.type == "blocks"
-                    and .issue.state.type != "completed"
-                    and .issue.state.type != "canceled")
-             ] | length) == 0
-        )]
-    '
-}
 
 cli_team="" cli_label="" cli_assignee="" cli_no_assignee="" cli_state="" cli_cycle="" cli_sort=""
 cli_priority="" cli_worktree_root="" cli_in_progress_state="" cli_blocked_state=""
@@ -609,10 +615,12 @@ termic_action="$(_resolve AITASK_TERMIC "$cli_termic" "")"
 prompt_file="$(_resolve AITASK_PROMPT_FILE "$cli_prompt_file" "")"
 prompt_extra="$(_resolve AITASK_PROMPT_EXTRA "$cli_prompt_extra" "")"
 
+# Validate agent type
 case "$agent_type" in
     claude|opencode) ;;
     *) _die "Invalid --agent-type '$agent_type' - must be 'claude' or 'opencode'" ;;
 esac
+
 # Validate --termic early so a typo in a config file fails fast. Empty
 # (the default) means the feature is off - no further checks needed.
 if [ -n "$termic_action" ] ; then
