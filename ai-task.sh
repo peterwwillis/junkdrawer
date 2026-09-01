@@ -101,6 +101,15 @@ has an AITASK_<NAME> env var equivalent):
                               above instead of requiring a ticket id
   --worktree-root DIR         Parent directory for new worktrees
                               (default: \$HOME/.local/ai-task/worktrees/$REPO_NAME)
+  --reuse-worktree            If the worktree for this ticket already
+                              exists (or its branch does), reuse it
+                              instead of failing: branch tip and any
+                              uncommitted changes are kept as-is and
+                              the session is relaunched against them.
+                              A stale directory that isn't a git
+                              worktree of this repo, or a live tmux
+                              session, still fails - clean those up
+                              yourself.
   --in-progress-state STATE   Exact Linear state name to set when starting
                               (default: "In Progress")
   --blocked-state STATE       Exact Linear state name if the agent gets stuck
@@ -195,7 +204,7 @@ has an AITASK_<NAME> env var equivalent):
 
 Environment variables: AITASK_TEAM, AITASK_LABEL, AITASK_ASSIGNEE,
 AITASK_NO_ASSIGNEE, AITASK_STATE, AITASK_CYCLE, AITASK_SORT, AITASK_PRIORITY,
-AITASK_WORKTREE_ROOT, AITASK_IN_PROGRESS_STATE, AITASK_BLOCKED_STATE,
+AITASK_WORKTREE_ROOT, AITASK_REUSE_WORKTREE, AITASK_IN_PROGRESS_STATE, AITASK_BLOCKED_STATE,
 AITASK_AGENT_TYPE, AITASK_PERMISSION_MODE, AITASK_MODEL, AITASK_AGENT_SETTINGS,
 AITASK_AWS_ROLE_READONLY, AITASK_CREDS_LOADER, AITASK_ALLOWED_HOSTS, AITASK_TERMIC,
 AITASK_PROMPT_FILE, AITASK_PROMPT_EXTRA.
@@ -636,34 +645,105 @@ _report_plan () {
     _info "Creds loader: ${creds_loader:-<none>}"
 }
 
-# Dies (with cleanup hints) on conflicts that would make the run fail later:
-# an existing worktree dir, an existing worktree branch, or an existing tmux
-# session. Sets nothing.
-_preflight_conflicts () {
+# _is_registered_worktree DIR -> true iff DIR is a worktree (linked or
+# main) of THIS repo, not just any git directory that happens to be there.
+_is_registered_worktree () {
+    local dir="$1" dir_common repo_common
+    dir_common="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+    repo_common="$(git -C "$ROOTDIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+    [ "$dir_common" = "$repo_common" ]
+}
+
+# _decide_worktree_action REPORT_ONLY
+#
+# Inspects git/tmux state and sets global worktree_action to what `start`
+# will do about the worktree:
+#   create                - fresh `git worktree add -b` from origin/<main>
+#   reuse-dir             - worktree already exists; resume it as-is
+#   recreate-from-branch  - branch exists but the dir is gone; re-add the
+#                           worktree on that branch, no reset
+# The reuse actions require --reuse-worktree (AITASK_REUSE_WORKTREE=true);
+# without it an existing worktree dir or branch is a fatal conflict.
+# Two things are never overridden, even with --reuse-worktree: a stale
+# directory that isn't a git worktree of this repo (this script never
+# rm -rf's data it doesn't manage), and a live tmux session (an agent may
+# be mid-task - attach or `tmux kill-session` yourself).
+# REPORT_ONLY=1 (dry run) reports would-be failures via _info instead of
+# exiting.
+_decide_worktree_action () {
+    local report_only="$1" conflict_msg=""
+    worktree_action="create"
+
     if [ -e "$worktree_dir" ] ; then
-        _err "Worktree directory already exists: $worktree_dir"
-        _die "If the previous task for $identifier is done: git -C \"$ROOTDIR\" worktree remove \"$worktree_dir\" - then re-run. (If its tmux session is still up: tmux attach -t $session)"
+        if ! _is_registered_worktree "$worktree_dir" ; then
+            conflict_msg="Worktree directory already exists, but is not a git worktree of this repo: $worktree_dir. Remove it manually if it's stale - this script never deletes directories it doesn't manage."
+        elif [ "$reuse_worktree" != "true" ] ; then
+            conflict_msg="Worktree directory already exists: $worktree_dir. Re-run with --reuse-worktree to resume it (branch tip and uncommitted changes kept as-is), or clean up first: git -C \"$ROOTDIR\" worktree remove \"$worktree_dir\""
+        else
+            worktree_action="reuse-dir"
+        fi
+    elif git -C "$ROOTDIR" show-ref --verify --quiet "refs/heads/$branch" ; then
+        # The dir may be gone while the branch lingers (e.g. the worktree was
+        # deleted with `git worktree remove`, or the branch was pushed from
+        # elsewhere). `git worktree add -b` would fail here with a cryptic git
+        # error, so check proactively.
+        if [ "$reuse_worktree" != "true" ] ; then
+            conflict_msg="Branch '$branch' already exists in $REPO_NAME, so the worktree branch can't be created. Re-run with --reuse-worktree to recreate the worktree from that branch (no reset), or delete it first: git -C \"$ROOTDIR\" branch -D \"$branch\". (Also consider: git worktree prune)"
+        else
+            worktree_action="recreate-from-branch"
+        fi
     fi
-    # The dir may be gone while the branch lingers (e.g. the worktree was
-    # deleted without `git worktree remove`, or the branch was pushed from
-    # elsewhere). `git worktree add -b` would fail here with a cryptic git
-    # error, so check proactively.
-    if git -C "$ROOTDIR" show-ref --verify --quiet "refs/heads/$branch" ; then
-        _err "Branch '$branch' already exists in $REPO_NAME, so the worktree branch can't be created."
-        _die "If it's from a finished task: git -C \"$ROOTDIR\" branch -D \"$branch\" - then re-run. (Also consider: git worktree prune)"
+
+    if [ -n "$conflict_msg" ] ; then
+        if [ "$report_only" = "1" ] ; then
+            _info "(dry run) Would fail: $conflict_msg"
+        else
+            _die "$conflict_msg"
+        fi
     fi
+
     if tmux has-session -t "$session" 2>/dev/null ; then
-        _die "tmux session '$session' already exists. Attach with: tmux attach -t $session"
+        if [ "$report_only" = "1" ] ; then
+            _info "(dry run) Would fail: tmux session '$session' already exists. Attach with: tmux attach -t $session"
+        else
+            _die "tmux session '$session' already exists. Attach with: tmux attach -t $session"
+        fi
     fi
 }
 
 _create_worktree () {
-    _info "Fetching latest origin/$MAIN_BRANCH..."
-    git -C "$ROOTDIR" fetch origin "$MAIN_BRANCH"
+    case "$worktree_action" in
+        reuse-dir)
+            _info "Reusing existing worktree $worktree_dir..."
+            _adopt_reused_worktree
+            ;;
+        recreate-from-branch)
+            _info "Recreating worktree from the existing branch '$branch'..."
+            git -C "$ROOTDIR" worktree add "$worktree_dir" "$branch"
+            ;;
+        *)
+            _info "Fetching latest origin/$MAIN_BRANCH..."
+            git -C "$ROOTDIR" fetch origin "$MAIN_BRANCH"
 
-    _info "Creating worktree..."
-    mkdir -p "$worktree_root"
-    git -C "$ROOTDIR" worktree add -b "$branch" "$worktree_dir" "origin/$MAIN_BRANCH"
+            _info "Creating worktree..."
+            mkdir -p "$worktree_root"
+            git -C "$ROOTDIR" worktree add -b "$branch" "$worktree_dir" "origin/$MAIN_BRANCH"
+            ;;
+    esac
+}
+
+# Reuse path: the worktree may sit on a different branch than Linear's
+# branchName (e.g. resumed work, or Linear regenerated the name). Adopt the
+# worktree's own branch so reporting and the prompt stay truthful, warning
+# when it differs. A detached HEAD has no branch to continue on - refuse.
+_adopt_reused_worktree () {
+    local wt_branch
+    wt_branch="$(git -C "$worktree_dir" symbolic-ref --short HEAD 2>/dev/null)" \
+        || _die "Existing worktree $worktree_dir is in detached-HEAD state - can't resume it. Re-attach a branch in it, or remove the worktree and start fresh."
+    if [ "$wt_branch" != "$branch" ] ; then
+        _info "Note: worktree is on branch '$wt_branch' (Linear suggested '$branch') - continuing on '$wt_branch'."
+        branch="$wt_branch"
+    fi
 }
 
 # Sets global: aws_dir. No-op unless AWS ReadOnly mode is on.
@@ -947,11 +1027,18 @@ cmd_start () {
     _report_plan
 
     if [ "$dry_run" = "1" ] ; then
-        _info "(dry run) Would create worktree, mark issue in progress, and start tmux session."
+        _decide_worktree_action 1
+        local action_desc
+        case "$worktree_action" in
+            reuse-dir)            action_desc="reuse the existing worktree at $worktree_dir (branch tip and uncommitted changes kept as-is)" ;;
+            recreate-from-branch) action_desc="recreate the worktree from the existing branch '$branch' (no reset)" ;;
+            *)                    action_desc="create worktree" ;;
+        esac
+        _info "(dry run) Would $action_desc, mark $identifier as '$in_progress_state', and start tmux session '$session'."
         return 0
     fi
 
-    _preflight_conflicts
+    _decide_worktree_action 0
     _create_worktree
     _setup_aws_readonly
     _write_sandbox_config
@@ -978,7 +1065,7 @@ _parse_options () {
     cli_team="" cli_label="" cli_assignee="" cli_no_assignee="" cli_state="" cli_cycle="" cli_sort=""
     cli_priority="" cli_worktree_root="" cli_in_progress_state="" cli_blocked_state=""
     cli_agent_type="" cli_permission_mode="" cli_model="" cli_agent_settings="" cli_aws_readonly="" cli_allowed_hosts="" cli_termic="" cli_prompt_file=""
-    cli_prompt_extra="" cli_creds_loader="" dry_run=0 first=0
+    cli_prompt_extra="" cli_creds_loader="" cli_reuse_worktree="" dry_run=0 first=0
     # Ticket id (for `start`) is collected as a bare positional argument
     # here, so --first can be recognized no matter where it appears
     # relative to it.
@@ -1009,6 +1096,7 @@ _parse_options () {
             --prompt-file)         shift; _require_value --prompt-file "$#"; cli_prompt_file="$1" ;;
             --prompt-extra)        shift; _require_value --prompt-extra "$#"; cli_prompt_extra="$1" ;;
             --first)               first=1 ;;
+            --reuse-worktree)      cli_reuse_worktree="true" ;;
             -n|--dry-run)          dry_run=1 ;;
             -h|--help)             _usage; exit 0 ;;
             -*)                    _err "Unknown argument: $1"; _usage_error ;;
@@ -1038,6 +1126,7 @@ _resolve_options () {
     # it here would force git-repo detection (and its network touch) onto
     # commands that never create a worktree.
     worktree_root="$(_resolve AITASK_WORKTREE_ROOT "$cli_worktree_root" "")"
+    reuse_worktree="$(_resolve AITASK_REUSE_WORKTREE "$cli_reuse_worktree" "false")"
     in_progress_state="$(_resolve AITASK_IN_PROGRESS_STATE "$cli_in_progress_state" "In Progress")"
     blocked_state="$(_resolve AITASK_BLOCKED_STATE "$cli_blocked_state" "Blocked")"
     agent_type="$(_resolve AITASK_AGENT_TYPE "$cli_agent_type" "claude")"
