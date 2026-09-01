@@ -938,17 +938,32 @@ _write_launcher () {
         # versions), so the launcher re-execs itself under `env -i bash -l`
         # instead: agent ends up in a pristine login shell regardless of
         # whatever the launching terminal had exported. Only HOME (needed),
-        # TERM (needed by agent CLIs; tmux default if unset) and locale vars
-        # pass through; PATH is rebuilt by /etc/profile + ~/.bash_profile.
+        # TERM (needed by agent CLIs; tmux default if unset), USER/LOGNAME
+        # (claude's keychain-backed login reports "Not logged in" without
+        # them - empirically bisected: the keychain item itself stays
+        # readable, the agent's auth path just requires these two), and
+        # locale vars pass through; PATH is rebuilt by /etc/profile +
+        # ~/.bash_profile.
         # NOTE: if your login profiles export credentials, they come back by
         # design - this isolates from the session's shell, not from your
         # machine's startup files.
+        #
+        # The script is handed to the second stage via -c + AITASK_LAUNCHER,
+        # NOT as a positional argument (`bash -l "$0"`): inside a script,
+        # "$@" is the script's (empty) argument list, and login profiles
+        # that re-exec /bin/bash into another bash via `bash -i -l "$@"`
+        # (e.g. to upgrade to homebrew bash - Termic and VS Code's shell-env
+        # resolver rely on that trick) would drop the script path entirely,
+        # leaving the pane as a bare interactive shell that never launches
+        # the agent. With -c the command survives in $BASH_EXECUTION_STRING,
+        # which such profiles do preserve.
         cat <<'EOLAUNCHER'
 if [ "${AITASK_CLEAN_ENV:-}" != "1" ] ; then
-    clean_env=(env -i HOME="$HOME" AITASK_CLEAN_ENV=1 "TERM=${TERM:-xterm-256color}")
+    agent_user="${USER:-$(id -un)}"
+    clean_env=(env -i HOME="$HOME" AITASK_CLEAN_ENV=1 "AITASK_LAUNCHER=$0" "TERM=${TERM:-xterm-256color}" "USER=$agent_user" "LOGNAME=${LOGNAME:-$agent_user}")
     [ -z "${LANG:-}" ] || clean_env+=("LANG=$LANG")
     [ -z "${LC_ALL:-}" ] || clean_env+=("LC_ALL=$LC_ALL")
-    exec "${clean_env[@]}" bash -l "$0"
+    exec "${clean_env[@]}" bash -l -c 'exec "$AITASK_LAUNCHER"'
 fi
 EOLAUNCHER
         printf 'cd %q\n' "$worktree_dir"
