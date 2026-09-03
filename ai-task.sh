@@ -76,8 +76,9 @@ Commands:
                           credentials (they last about an hour - an AWS
                           platform limit, not configurable - see README.md).
 
-"Ready to work" (for \`list\`) means: matches --state, in the --cycle, has
-the --label, assigned to --assignee, optionally matching --priority, and
+"Ready to work" (for \`list\`) means: matches --state, in the --cycle
+(unless --cycle any/* or --no-cycle disables that filter), has the
+--label, assigned to --assignee, optionally matching --priority, and
 not blocked by any other open (non-completed/canceled) issue. Output is
 one "IDENTIFIER<tab>title" line per match.
 
@@ -90,9 +91,12 @@ has an AITASK_<NAME> env var equivalent):
   --assignee ASSIGNEE        Assignee filter (default: self). Use "any"
                              for no assignee filter at all.
   --no-assignee               Only unassigned issues - overrides --assignee
-  --state STATE              Issue state filter (default: unstarted)
-  --cycle CYCLE               Cycle filter (default: active)
-  --sort SORT                Sort order: priority or manual (default: priority)
+    --state STATE              Issue state filter (default: unstarted)
+   --cycle CYCLE               Cycle filter (default: active). "any" or "*"
+                               (quote it in your shell) disables the cycle
+                               filter entirely
+   --no-cycle                   No cycle filter - overrides --cycle
+   --sort SORT                Sort order: priority or manual (default: priority)
   --priority N                Filter to issues with exactly this priority
                               (1-4; unset = no filter)
 
@@ -203,7 +207,7 @@ has an AITASK_<NAME> env var equivalent):
   -h, --help                  This screen
 
 Environment variables: AITASK_TEAM, AITASK_LABEL, AITASK_ASSIGNEE,
-AITASK_NO_ASSIGNEE, AITASK_STATE, AITASK_CYCLE, AITASK_SORT, AITASK_PRIORITY,
+AITASK_NO_ASSIGNEE, AITASK_STATE, AITASK_CYCLE, AITASK_NO_CYCLE, AITASK_SORT, AITASK_PRIORITY,
 AITASK_WORKTREE_ROOT, AITASK_REUSE_WORKTREE, AITASK_IN_PROGRESS_STATE, AITASK_BLOCKED_STATE,
 AITASK_AGENT_TYPE, AITASK_PERMISSION_MODE, AITASK_MODEL, AITASK_AGENT_SETTINGS,
 AITASK_AWS_ROLE_READONLY, AITASK_CREDS_LOADER, AITASK_ALLOWED_HOSTS, AITASK_TERMIC,
@@ -491,7 +495,7 @@ _detect_main_branch () {
 # config files, so a persisted config can't clobber something you explicitly
 # exported just for this run.
 
-_AITASK_VARS="AITASK_TEAM AITASK_LABEL AITASK_ASSIGNEE AITASK_NO_ASSIGNEE AITASK_STATE AITASK_CYCLE
+_AITASK_VARS="AITASK_TEAM AITASK_LABEL AITASK_ASSIGNEE AITASK_NO_ASSIGNEE AITASK_STATE AITASK_CYCLE AITASK_NO_CYCLE
 AITASK_SORT AITASK_PRIORITY AITASK_WORKTREE_ROOT AITASK_IN_PROGRESS_STATE AITASK_BLOCKED_STATE
 AITASK_AGENT_TYPE AITASK_PERMISSION_MODE AITASK_MODEL AITASK_AGENT_SETTINGS AITASK_AWS_ROLE_READONLY
 AITASK_CREDS_LOADER AITASK_ALLOWED_HOSTS AITASK_TERMIC AITASK_PROMPT_FILE AITASK_PROMPT_EXTRA"
@@ -534,7 +538,7 @@ _query_ready_issues () {
         --team "$team" \
         --label "$label" \
         --state "$state" \
-        --cycle "$cycle" \
+        ${cycle_args[@]+"${cycle_args[@]}"} \
         "${assignee_args[@]}" \
         --sort "$sort" \
         --limit 50)"
@@ -553,7 +557,7 @@ _query_ready_issues () {
 # ── list command ─────────────────────────────────────────────────────────────
 
 cmd_list () {
-    _info "Querying Linear: team=$team label=$label state=$state cycle=$cycle $assignee_desc sort=$sort${priority:+ priority=$priority}"
+    _info "Querying Linear: team=$team label=$label state=$state $cycle_desc $assignee_desc sort=$sort${priority:+ priority=$priority}"
     local matches_json count
     matches_json="$(_query_ready_issues)"
 
@@ -562,7 +566,7 @@ cmd_list () {
         ''|*[!0-9]*) _die "Unexpected output from 'linear issue query' - couldn't parse the result. Is your linear CLI up to date?" ;;
     esac
     if [ "$count" -eq 0 ] ; then
-        _info "No ready issues found for team $team (checked state=$state, cycle=$cycle, label=$label, $assignee_desc${priority:+, priority=$priority}, unblocked)."
+        _info "No ready issues found for team $team (checked state=$state, $cycle_desc, label=$label, $assignee_desc${priority:+, priority=$priority}, unblocked)."
         return 0
     fi
     printf '%s' "$matches_json" | jq -r '.[] | "\(.identifier)\t\(.title)"'
@@ -574,7 +578,7 @@ cmd_list () {
 _pick_first_ticket () {
     if [ "$first" = "1" ] ; then
         [ -z "$ticket_id" ] || _die "Can't pass both a ticket id ('$ticket_id') and --first."
-        _info "Querying Linear for the top match: team=$team label=$label state=$state cycle=$cycle $assignee_desc sort=$sort${priority:+ priority=$priority}"
+        _info "Querying Linear for the top match: team=$team label=$label state=$state $cycle_desc $assignee_desc sort=$sort${priority:+ priority=$priority}"
         local matches_json
         matches_json="$(_query_ready_issues)"
         ticket_id="$(printf '%s' "$matches_json" | jq -r 'first | .identifier // empty')"
@@ -1077,7 +1081,7 @@ cmd_start () {
 # Consumes the remaining args (after the subcommand) into cli_* globals.
 # Also sets: dry_run, first, ticket_id.
 _parse_options () {
-    cli_team="" cli_label="" cli_assignee="" cli_no_assignee="" cli_state="" cli_cycle="" cli_sort=""
+    cli_team="" cli_label="" cli_assignee="" cli_no_assignee="" cli_state="" cli_cycle="" cli_no_cycle="" cli_sort=""
     cli_priority="" cli_worktree_root="" cli_in_progress_state="" cli_blocked_state=""
     cli_agent_type="" cli_permission_mode="" cli_model="" cli_agent_settings="" cli_aws_readonly="" cli_allowed_hosts="" cli_termic="" cli_prompt_file=""
     cli_prompt_extra="" cli_creds_loader="" cli_reuse_worktree="" dry_run=0 first=0
@@ -1094,6 +1098,7 @@ _parse_options () {
             --no-assignee)         cli_no_assignee="true" ;;
             --state)               shift; _require_value --state "$#"; cli_state="$1" ;;
             --cycle)               shift; _require_value --cycle "$#"; cli_cycle="$1" ;;
+            --no-cycle)            cli_no_cycle="true" ;;
             --sort)                shift; _require_value --sort "$#"; cli_sort="$1" ;;
             --priority)            shift; _require_value --priority "$#"; cli_priority="$1" ;;
             --worktree-root)       shift; _require_value --worktree-root "$#"; cli_worktree_root="$1" ;;
@@ -1135,6 +1140,7 @@ _resolve_options () {
     no_assignee="$(_resolve AITASK_NO_ASSIGNEE "$cli_no_assignee" "false")"
     state="$(_resolve AITASK_STATE "$cli_state" "unstarted")"
     cycle="$(_resolve AITASK_CYCLE "$cli_cycle" "active")"
+    no_cycle="$(_resolve AITASK_NO_CYCLE "$cli_no_cycle" "false")"
     sort="$(_resolve AITASK_SORT "$cli_sort" "priority" LINEAR_ISSUE_SORT)"
     priority="$(_resolve AITASK_PRIORITY "$cli_priority" "")"
     # Default is filled in by cmd_start once REPO_NAME is known - resolving
@@ -1197,6 +1203,24 @@ _build_assignee_filter () {
     elif [ "$assignee" = "any" ] ; then
         assignee_args=(--all-assignees)
         assignee_desc="assignee=any"
+    fi
+}
+
+# Sets globals: cycle_args, cycle_desc.
+#
+# --no-cycle wins over --cycle (any value, including a specific cycle name)
+# - it's treated as equivalent to --cycle any/*. linear-cli has no
+# --all-cycles flag, so "any cycle" means omitting --cycle from the query
+# entirely (the CLI's own default). The empty cycle_args array is expanded
+# at the call site with the "${cycle_args[@]+...}" guard, which stays safe
+# under set -u on bash 3.2.
+_build_cycle_filter () {
+    if [ "$no_cycle" = "true" ] || [ "$cycle" = "any" ] || [ "$cycle" = "*" ] ; then
+        cycle_args=()
+        cycle_desc="cycle=any"
+    else
+        cycle_args=(--cycle "$cycle")
+        cycle_desc="cycle=$cycle"
     fi
 }
 
@@ -1301,6 +1325,7 @@ main () {
     _resolve_options
     _validate_options
     _build_assignee_filter
+    _build_cycle_filter
     _ensure_team_configured
 
     if [ "$cmd" = "list" ] ; then
