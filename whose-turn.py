@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Dialog-based TUI that cross-references your open GitHub PRs and Linear issues to show whose turn it is."""
+"""Dialog-based TUI that cross-references your open GitHub PRs, GitHub issues assigned to
+you (across every repo you can access), and Linear issues to show whose turn it is."""
 import argparse
 import concurrent.futures
 import getpass
@@ -31,6 +32,10 @@ PR_FIELDS = ",".join([
     "reviews", "comments", "commits", "headRefName", "body", "createdAt", "assignees",
 ])
 
+ISSUE_FIELDS = ",".join([
+    "number", "title", "url", "body", "createdAt", "updatedAt", "state",
+])
+
 # Priority tiers, also used to group checklist displays with divider rows.
 GH_TIERS = [
     ("review_requested", "Review requested of you"),
@@ -51,7 +56,9 @@ IN_PROGRESS_TIERS = [
 ]
 
 MAIN_HELP = (
-    "Whose Turn tracks who needs to act next on your GitHub PRs and Linear issues.\n\n"
+    "Whose Turn tracks who needs to act next on your GitHub PRs, GitHub issues assigned "
+    "to you, and Linear issues -- across every repo you can access (GitHub search is not "
+    "repo-bound).\n\n"
     "Get latest: run all GitHub/Linear queries and cache the result.\n"
     "See results: browse the cached data by category.\n"
     "Next GitHub/Linear item to work on: walk a single-item priority queue of what to do next.\n\n"
@@ -142,20 +149,75 @@ def extract_linear_ids(team_keys, *texts):
     return ids
 
 
-def fetch_my_open_prs():
-    return json.loads(run([
-        "gh", "pr", "list", "--author", "@me", "--state", "open",
-        "--json", PR_FIELDS, "--limit", "30",
-    ]))
+SEARCH_LIMIT = 50
 
 
-def fetch_review_requested_prs():
-    # draft:false -- a draft isn't actually ready for your review yet, even if requested
+def search_open_prs(*qualifiers):
+    """Open PRs across every repo you can access -- GitHub search, unlike gh pr list,
+    is not bound to the cwd's repo. Returns [{number, url}]; details come later."""
     out = run([
-        "gh", "pr", "list", "--search", "review-requested:@me is:open draft:false",
-        "--json", PR_FIELDS, "--limit", "30",
+        "gh", "search", "prs", "--state", "open", "--sort", "updated", "--order", "desc",
+        "--limit", str(SEARCH_LIMIT), "--json", "number,url",
+    ] + list(qualifiers))
+    return json.loads(out) if out.strip() else []
+
+
+def search_my_open_prs():
+    return search_open_prs("--author", "@me")
+
+
+def search_review_requested_prs():
+    # draft:false -- a draft isn't actually ready for your review yet, even if requested
+    return search_open_prs("--review-requested", "@me", "--draft=false")
+
+
+def search_assigned_issues():
+    """Open GitHub issues assigned to you, any repo. (gh search issues excludes PRs
+    unless --include-prs is passed.)"""
+    out = run([
+        "gh", "search", "issues", "--assignee", "@me", "--state", "open", "--sort", "updated",
+        "--order", "desc", "--limit", str(SEARCH_LIMIT), "--json", "number,url",
     ])
     return json.loads(out) if out.strip() else []
+
+
+def repo_from_url(url):
+    """owner/name from https://github.com/owner/name/(pull|issues)/N."""
+    return "/".join(url.split("/")[-4:-2])
+
+
+def fetch_details(urls, kind, fields, progress=None):
+    """[url, ...] -> [full `gh {kind} view` dicts, each with `repo` added]. Items that
+    can't be fetched (e.g. closed between search and view) are skipped; failing on every
+    URL means something systemic (auth, network), so raise rather than return empty."""
+    if not urls:
+        return []
+    total = len(urls)
+
+    def fetch_one(url):
+        try:
+            detail = json.loads(run(["gh", kind, "view", url, "--json", fields]))
+            detail["repo"] = repo_from_url(url)
+            return detail
+        except FetchError as e:
+            return e
+
+    results, errors = [], []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(fetch_one, url) for url in urls]
+        for done, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+            result = future.result()
+            if progress:
+                progress(done, total)
+            if isinstance(result, FetchError):
+                errors.append(str(result))
+            else:
+                results.append(result)
+    if not results:
+        raise FetchError(
+            f"could not fetch details for any of {total} {kind}s; last error:\n{errors[-1]}"
+        )
+    return results
 
 
 def linear_query(assignee, state_type):
@@ -333,6 +395,14 @@ def issue_item(issue):
     }
 
 
+def gh_issue_item(issue):
+    return {
+        "type": "gh_issue", "number": issue["number"], "title": issue["title"],
+        "url": issue["url"], "repo": issue.get("repo", ""), "body": issue.get("body") or "",
+        "created_at": issue["createdAt"], "updated_at": issue["updatedAt"],
+    }
+
+
 def run_parallel(tasks, on_done=None):
     """tasks: {name: callable}. Returns {name: result}; a raised exception propagates
     from .result() once every task has been collected."""
@@ -359,8 +429,9 @@ def build_snapshot(linear_assignee, progress=None):
     my_login, team_keys = base["my_login"], base["team_keys"]
 
     fetch_tasks = {
-        "my_prs": fetch_my_open_prs,
-        "review_requested_prs": fetch_review_requested_prs,
+        "my_pr_candidates": search_my_open_prs,
+        "review_requested_candidates": search_review_requested_prs,
+        "assigned_gh_issues": search_assigned_issues,
         "started_issues": lambda: linear_query(linear_assignee, "started"),
         "todo_issues": lambda: linear_query(linear_assignee, "unstarted"),
     }
@@ -374,12 +445,28 @@ def build_snapshot(linear_assignee, progress=None):
     p(15, f"Fetching {len(fetch_tasks)} data sources in parallel...")
     fresh = run_parallel(fetch_tasks, on_done=on_done)
 
-    my_prs = fresh["my_prs"]
-    review_requested_prs = fresh["review_requested_prs"]
+    # A PR you authored that also has a review requested of you counts once, as
+    # review-requested -- that's the actionable classification.
+    review_requested_urls = {c["url"] for c in fresh["review_requested_candidates"]}
+    pr_urls = [c["url"] for c in fresh["my_pr_candidates"] if c["url"] not in review_requested_urls]
+    pr_urls += sorted(review_requested_urls)
+    gh_issue_urls = [c["url"] for c in fresh["assigned_gh_issues"]]
+
+    p(70, f"Fetching details for {len(pr_urls)} PRs and {len(gh_issue_urls)} GitHub issues...")
+    details = run_parallel({
+        "pr_details": lambda: fetch_details(pr_urls, "pr", PR_FIELDS,
+            lambda d, t: p(70 + round(10 * d / max(t, 1)), f"PR details ({d}/{t})")),
+        "gh_issue_details": lambda: fetch_details(gh_issue_urls, "issue", ISSUE_FIELDS,
+            lambda d, t: p(80 + round(5 * d / max(t, 1)), f"Issue details ({d}/{t})")),
+    })
+
+    my_prs = [d for d in details["pr_details"] if d["url"] not in review_requested_urls]
+    review_requested_prs = [d for d in details["pr_details"] if d["url"] in review_requested_urls]
+    gh_issues = details["gh_issue_details"]
     started_issues = fresh["started_issues"]
     todo_issues = fresh["todo_issues"]
 
-    p(75, "Checking Linear blocking relations and attached PRs...")
+    p(87, "Checking Linear blocking relations and attached PRs...")
     started_ids = [i["identifier"] for i in started_issues]
     blocking_map = fetch_blocking_relations(started_ids)
     pr_attachments = fetch_pr_attachments(started_ids)
@@ -394,8 +481,9 @@ def build_snapshot(linear_assignee, progress=None):
         tickets = sorted(extract_linear_ids(team_keys, pr.get("body"), pr.get("headRefName")))
         item = {
             "type": "pr", "number": pr["number"], "title": pr["title"], "url": pr["url"],
-            "body": pr.get("body") or "", "reason": reason, "reason_kind": reason_kind,
-            "created_at": pr["createdAt"], "activity_at": activity_at, "tickets": tickets,
+            "repo": pr["repo"], "body": pr.get("body") or "", "reason": reason,
+            "reason_kind": reason_kind, "created_at": pr["createdAt"],
+            "activity_at": activity_at, "tickets": tickets,
         }
         (your_turn if turn == "you" else their_turn).append(item)
 
@@ -404,8 +492,9 @@ def build_snapshot(linear_assignee, progress=None):
         reason, reason_kind = classify_review_request(pr, my_login)
         your_turn.append({
             "type": "pr", "number": pr["number"], "title": pr["title"], "url": pr["url"],
-            "body": pr.get("body") or "", "reason": reason, "reason_kind": reason_kind,
-            "created_at": pr["createdAt"], "activity_at": pr["createdAt"], "tickets": tickets,
+            "repo": pr["repo"], "body": pr.get("body") or "", "reason": reason,
+            "reason_kind": reason_kind, "created_at": pr["createdAt"],
+            "activity_at": pr["createdAt"], "tickets": tickets,
         })
 
     closeable, in_progress_with_pr, in_progress_no_pr = [], [], []
@@ -434,10 +523,12 @@ def build_snapshot(linear_assignee, progress=None):
             in_progress_no_pr.append(item)
 
     todo = [issue_item(i) for i in todo_issues]
+    gh_issue_items = [gh_issue_item(i) for i in gh_issues]
 
     your_turn.sort(key=lambda x: x["activity_at"], reverse=True)
     their_turn.sort(key=lambda x: x["activity_at"], reverse=True)
-    for lst in (closeable, in_progress_with_pr, in_progress_no_pr, blocked_list, blocking_others, todo):
+    for lst in (closeable, in_progress_with_pr, in_progress_no_pr, blocked_list,
+                blocking_others, todo, gh_issue_items):
         lst.sort(key=lambda x: x["updated_at"], reverse=True)
 
     p(100, "Done")
@@ -452,6 +543,7 @@ def build_snapshot(linear_assignee, progress=None):
         "blocked": blocked_list,
         "blocking_others": blocking_others,
         "todo": todo,
+        "gh_issues": gh_issue_items,
     }
 
 
@@ -479,12 +571,16 @@ def load_cache():
 
 ALL_BUCKETS = (
     "your_turn", "their_turn", "closeable", "in_progress_with_pr",
-    "in_progress_no_pr", "blocked", "blocking_others", "todo",
+    "in_progress_no_pr", "blocked", "blocking_others", "todo", "gh_issues",
 )
 
 
 def item_key(item):
-    return f"pr:{item['number']}" if item["type"] == "pr" else f"issue:{item['identifier']}"
+    t = item["type"]
+    # PR numbers collide across repos, so keys are repo-qualified
+    if t in ("pr", "gh_issue"):
+        return f"{t}:{item.get('repo', '')}#{item['number']}"
+    return f"issue:{item['identifier']}"
 
 
 def build_fingerprints(data):
@@ -546,6 +642,8 @@ def github_priority_queue(data):
     for key, _ in GH_TIERS:
         tier_items = [i for i in data["your_turn"] if i["reason_kind"] == key]
         queue.extend(sorted(tier_items, key=lambda x: x["activity_at"], reverse=True))
+    # Assigned GitHub issues come after PR tiers -- PRs awaiting your action block others.
+    queue.extend(sorted(data.get("gh_issues", []), key=lambda x: x["updated_at"], reverse=True))
     return queue
 
 
@@ -665,10 +763,15 @@ def print_progress(pct, text):
 # ---------- rendering ----------
 
 def checklist_label(item):
-    if item["type"] == "pr":
-        label = f"#{item['number']} {item['title']} — {item['reason']} ({age_str(item['activity_at'])})"
+    t = item["type"]
+    if t == "pr":
+        label = (f"{item.get('repo', '')}#{item['number']} {item['title']}"
+                 f" — {item['reason']} ({age_str(item['activity_at'])})")
         if item.get("tickets"):
             label += f" [{', '.join(item['tickets'])}]"
+    elif t == "gh_issue":
+        label = (f"{item.get('repo', '')}#{item['number']} {item['title']}"
+                 f" (assigned, open) ({age_str(item['updated_at'])})")
     else:
         label = f"{item['identifier']} {item['title']} [{item['state']}] ({age_str(item['updated_at'])})"
         if item.get("blocked_by"):
@@ -695,11 +798,19 @@ def join_capped(values, limit=5):
 def item_lines(item):
     """Priority-ordered header/meta lines for the item (most important first)."""
     if item["type"] == "pr":
-        lines = [f"PR #{item['number']}: {item['title']}", f"Reason: {item['reason']}"]
+        lines = [f"{item.get('repo', '')} PR #{item['number']}: {item['title']}", f"Reason: {item['reason']}"]
         if item.get("tickets"):
             lines.append(f"Linear: {join_capped(item['tickets'])}")
         lines.append(f"URL: {item['url']}")
         lines.append(f"Created: {item['created_at']}")
+    elif item["type"] == "gh_issue":
+        lines = [
+            f"{item.get('repo', '')} issue #{item['number']}: {item['title']}",
+            "Open GitHub issue assigned to you",
+            f"URL: {item['url']}",
+            f"Created: {item.get('created_at', '')}",
+            f"Updated: {item.get('updated_at', '')}",
+        ]
     else:
         lines = [f"{item['identifier']}: {item['title']}", f"State: {item.get('state', '')}"]
         if item.get("blocked_by"):
@@ -719,7 +830,7 @@ def item_header_meta(item):
 
 
 def item_body(item):
-    if item["type"] == "pr":
+    if item["type"] in ("pr", "gh_issue"):
         return item.get("body") or "(no description)"
     try:
         return fetch_issue_description(item["identifier"])
@@ -869,6 +980,7 @@ def see_results_menu():
     yt_rows = your_turn_rows(data)
     other_rows = everything_else_rows(data)
     todo_rows = flat_rows(data["todo"])
+    gh_issue_rows = flat_rows(data.get("gh_issues", []))
 
     while True:
         choice = menu(
@@ -876,6 +988,7 @@ def see_results_menu():
             [
                 CANCEL,
                 ("your_turn", f"Your turn ({count_items(yt_rows)})"),
+                ("gh_issues", f"GitHub issues assigned to you ({count_items(gh_issue_rows)})"),
                 ("everything_else", f"Everything else ({count_items(other_rows)})"),
                 ("todo", f"Todo ({count_items(todo_rows)})"),
             ],
@@ -889,6 +1002,11 @@ def see_results_menu():
                 "Where you need to act: respond to a review request, merge an approval, address "
                 "changes requested, answer a comment, close a done ticket, or unblock a ticket "
                 "that's blocking others. Grouped by priority tier / category.",
+            )
+        elif choice == "gh_issues":
+            category_checklist(
+                "GitHub issues", gh_issue_rows,
+                "Open GitHub issues assigned to you, in any repo you can access.",
             )
         elif choice == "everything_else":
             category_checklist(
@@ -931,6 +1049,7 @@ def do_get_latest(linear_assignee):
         f"Fetched at {fmt_fetched_at(data)}\n\n"
         f"Your turn: {len(data['your_turn'])}\n"
         f"Waiting on others: {len(data['their_turn'])}\n"
+        f"GitHub issues assigned: {len(data['gh_issues'])}\n"
         f"Linear ready to close: {len(data['closeable'])}\n"
         f"Linear in progress w/ PR: {len(data['in_progress_with_pr'])}\n"
         f"Linear in progress no PR: {len(data['in_progress_no_pr'])}\n"
