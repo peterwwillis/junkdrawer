@@ -3,6 +3,7 @@
 you (across every repo you can access), and Linear issues to show whose turn it is."""
 import argparse
 import concurrent.futures
+import fcntl
 import getpass
 import json
 import os
@@ -22,6 +23,7 @@ CACHE_DIR = Path.home() / ".cache" / "whose-turn"
 CACHE_PATH = CACHE_DIR / "cache.json"
 SEEN_PATH = CACHE_DIR / "seen.json"
 CONFIG_PATH = Path.home() / ".config" / "whose-turn" / "config.json"
+LOCK_PATH = CACHE_DIR / "lock"
 CANCEL = ("__cancel__", "Cancel")
 
 BOT_LOGINS = {"github-actions", "linear", "dependabot", "renovate"}
@@ -81,6 +83,43 @@ NEXT_HELP = (
 
 class FetchError(Exception):
     pass
+
+
+class LockHeld(Exception):
+    pass
+
+
+# ---------- single-instance lock ----------
+
+_LOCK_FD = None
+
+
+def acquire_instance_lock(ignore):
+    """Default to one running instance: take an exclusive non-blocking flock on LOCK_PATH.
+    The kernel releases the lock automatically whenever the holder exits -- even on crash
+    or kill -- so a leftover lock file can never wedge the next launch. The fd is kept
+    open for the process's lifetime; closing it would drop the lock."""
+    global _LOCK_FD
+    if ignore:
+        return
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            holder = int(os.read(fd, 64).strip() or 0)
+        except ValueError:
+            holder = 0
+        os.close(fd)
+        raise LockHeld(
+            f"Another instance of {APP_TITLE} is already running"
+            + (f" (pid {holder})" if holder else "")
+            + ".\nRun again with --ignore-lock to bypass this check."
+        )
+    os.ftruncate(fd, 0)
+    os.write(fd, f"{os.getpid()}\n".encode())
+    _LOCK_FD = fd
 
 
 # ---------- shell helpers ----------
@@ -511,7 +550,7 @@ def build_snapshot(linear_assignee, progress=None):
             blocking_others.append(item)
 
         prs = pr_attachments.get(issue["identifier"], [])
-        open_prs = [pr for pr in prs if pr["status"] == "open"]
+        open_prs = [pr for pr in prs if pr["status"] in ("open", "draft")]
         merged_prs = [pr for pr in prs if pr["status"] == "merged"]
         if open_prs:
             item["prs"] = open_prs
@@ -1143,10 +1182,21 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--linear-assignee", default=None, help="Linear displayName to query (overrides saved config)")
     ap.add_argument("--json", action="store_true", help="Fetch, cache, and dump raw JSON (no TUI)")
+    ap.add_argument("--ignore-lock", action="store_true",
+                    help="Skip the single-instance lock (allow a second instance to run alongside)")
     args = ap.parse_args()
 
     if not args.json and shutil.which("dialog") is None:
         sys.stderr.write("This tool requires the 'dialog' utility. Install with: brew install dialog\n")
+        sys.exit(1)
+
+    try:
+        acquire_instance_lock(args.ignore_lock)
+    except LockHeld as e:
+        if args.json:
+            sys.stderr.write(f"{e}\n")
+        else:
+            msgbox(str(e), title="Already running")
         sys.exit(1)
 
     config = load_config()
