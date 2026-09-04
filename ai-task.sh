@@ -13,9 +13,19 @@
 # --creds-loader / AITASK_CREDS_LOADER points at a script that gets sourced
 # right before the agent launches to inject whatever credentials it needs.
 #
+# Repo selection for `start`: by default the task starts in whatever repo
+# the current directory belongs to. --repo-label-prefix (e.g. "gitrepo_")
+# switches to label-driven selection instead: a Linear label
+# "<PREFIX><NAME>" picks AITASK_REPO_DIRS[<NAME>] (an associative array in
+# the config file mapping label names to local checkouts) as the repo;
+# --repo-missing controls what happens when an issue lacks such a label
+# (prompt / fail / cwd), and --repo NAME forces a specific entry
+# regardless of labels.
+#
 # Each command's requirements are checked just for that command: `list`
 # needs only the linear CLI + jq (and works outside a git repo); `start`
-# additionally needs a git repo, git, tmux, and the CLI for whichever
+# additionally needs a git repo (normally the current directory's; see
+# Repo selection above), git, tmux, and the CLI for whichever
 # --agent-type is selected (claude or opencode); `aws-preauth` needs
 # aws-sso, the AWS CLI, and jq, but never touches Linear.
 set -eu
@@ -103,6 +113,23 @@ has an AITASK_<NAME> env var equivalent):
 \`start\` options (every option has an AITASK_<NAME> env var equivalent):
   --first                     Pick the top match from the filter options
                               above instead of requiring a ticket id
+  --repo NAME                Start in the repo mapped to NAME in the
+                              AITASK_REPO_DIRS config array (see Config
+                              file below) instead of the current
+                              directory's repo. Wins over everything else.
+  --repo-label-prefix PREFIX  Label-driven repo selection: a Linear label
+                              "<PREFIX><NAME>" (e.g. "gitrepo_junkdrawer"
+                              with prefix "gitrepo_") picks the repo mapped
+                              to NAME in AITASK_REPO_DIRS. Unset (the
+                              default) keeps the original behavior - the
+                              task always starts in the repo you're cd'd
+                              into.
+  --repo-missing ACTION      With a prefix set, what to do when the issue
+                              has no matching label: "prompt" (default) to
+                              pick a repo interactively (falls back to the
+                              current dir's repo when stdin isn't a
+                              terminal), "fail" to refuse to start, or
+                              "cwd" to just use the current dir's repo.
   --worktree-root DIR         Parent directory for new worktrees
                               (default: \$HOME/.local/ai-task/worktrees/$REPO_NAME)
   --reuse-worktree            If the worktree for this ticket already
@@ -208,6 +235,7 @@ has an AITASK_<NAME> env var equivalent):
 
 Environment variables: AITASK_TEAM, AITASK_LABEL, AITASK_ASSIGNEE,
 AITASK_NO_ASSIGNEE, AITASK_STATE, AITASK_CYCLE, AITASK_NO_CYCLE, AITASK_SORT, AITASK_PRIORITY,
+AITASK_REPO, AITASK_REPO_LABEL_PREFIX, AITASK_REPO_MISSING,
 AITASK_WORKTREE_ROOT, AITASK_REUSE_WORKTREE, AITASK_IN_PROGRESS_STATE, AITASK_BLOCKED_STATE,
 AITASK_AGENT_TYPE, AITASK_PERMISSION_MODE, AITASK_MODEL, AITASK_AGENT_SETTINGS,
 AITASK_AWS_ROLE_READONLY, AITASK_CREDS_LOADER, AITASK_ALLOWED_HOSTS, AITASK_TERMIC,
@@ -228,6 +256,15 @@ An explicit env var you set for this invocation always wins over anything
 a config file sets for the same name. See README.md for worktree-root
 conventions used by other tools (Termic, Conductor, opencode, ...) and how
 to point --worktree-root at one of them if you'd rather share that layout.
+
+AITASK_REPO_DIRS (optional; requires bash >= 4) maps a gitrepo-label NAME
+to a local checkout, and drives --repo / --repo-label-prefix repo
+selection. Assign entries directly - the script pre-declares the array,
+and a bare \`declare -A\` inside a sourced config file would be
+function-local and silently discarded (use \`declare -gA\` if you prefer
+that form):
+  AITASK_REPO_DIRS[junkdrawer]="\$HOME/git/GITHUB.COM/PETERWWILLIS/junkdrawer/main"
+  AITASK_REPO_LABEL_PREFIX="gitrepo_"
 EOUSAGE
 }
 
@@ -496,9 +533,22 @@ _detect_main_branch () {
 # exported just for this run.
 
 _AITASK_VARS="AITASK_TEAM AITASK_LABEL AITASK_ASSIGNEE AITASK_NO_ASSIGNEE AITASK_STATE AITASK_CYCLE AITASK_NO_CYCLE
-AITASK_SORT AITASK_PRIORITY AITASK_WORKTREE_ROOT AITASK_IN_PROGRESS_STATE AITASK_BLOCKED_STATE
+AITASK_SORT AITASK_PRIORITY AITASK_REPO AITASK_REPO_LABEL_PREFIX AITASK_REPO_MISSING
+AITASK_WORKTREE_ROOT AITASK_IN_PROGRESS_STATE AITASK_BLOCKED_STATE
 AITASK_AGENT_TYPE AITASK_PERMISSION_MODE AITASK_MODEL AITASK_AGENT_SETTINGS AITASK_AWS_ROLE_READONLY
 AITASK_CREDS_LOADER AITASK_ALLOWED_HOSTS AITASK_TERMIC AITASK_PROMPT_FILE AITASK_PROMPT_EXTRA"
+
+# Pre-declare the repo-dir map as a global associative array so config
+# files can assign entries directly (AITASK_REPO_DIRS[junkdrawer]=...).
+# A bare `declare -A` inside a config file would NOT work: configs are
+# sourced from _loadconf, a function, so the declaration would be
+# function-local and silently discarded - hence declare -gA in the docs.
+# Declared here (top level = global scope) rather than with -g so the
+# syntax is also valid at bash 4.0/4.1. On bash < 4 (macOS's /bin/bash
+# 3.2) this declaration fails; the trap keeps the script alive and the
+# cwd-repo paths keep working - only label/repo-driven starts, which need
+# the array, will report it as unconfigured.
+declare -A AITASK_REPO_DIRS=() 2>/dev/null || true
 
 # Snapshot the user's real AITASK_* env values into orig_<VAR> before any
 # config file is sourced (see precedence note above).
@@ -511,7 +561,23 @@ _snapshot_env () {
 
 # Loads shell script into current session if it exists
 # shellcheck source=/dev/null
-_loadconf () { [ ! -e "$1" ] || . "$1" ; }
+#
+# Sourced with `set -u` temporarily off: on bash < 4 a config line like
+# AITASK_REPO_DIRS[name]=... parses as an indexed-array assignment with an
+# arithmetic subscript, which would otherwise abort the whole script with
+# "name: unbound variable" (the variable doesn't exist yet). With -u off
+# it harmlessly lands in an indexed array, the script's own declare -A
+# pre-declaration keeps the associative array intact on bash >= 4, and
+# _require_repo_dirs_array turns the bash < 4 case into a clean error.
+_loadconf () {
+    [ -e "$1" ] || return 0
+    local flag_u=off
+    [ "${-#*u}" != "$-" ] && flag_u=on
+    set +u
+    . "$1"
+    [ "$flag_u" = on ] && set -u
+    return 0
+}
 
 # _resolve VAR CLIVAL DEFAULT [FALLBACK_ENV_VAR ...]
 _resolve () {
@@ -613,7 +679,9 @@ _validate_start_inputs () {
 
 # _fetch_issue TICKET-ID
 #
-# Sets globals: identifier, title, url, description, branch.
+# Sets globals: identifier, title, url, description, branch,
+# gitrepo_label_name (empty unless --repo-label-prefix is set and the
+# issue carries a matching label; see _resolve_start_repo).
 _fetch_issue () {
     local ticket="$1" issue_json
     issue_json="$(linear issue view "$ticket" --json)" || _die "Could not fetch issue '$ticket' from Linear."
@@ -628,6 +696,25 @@ _fetch_issue () {
     # "null".
     [ -n "$branch" ] && [ "$branch" != "null" ] \
         || _die "Linear issue '$ticket' has no branch name (.branchName is empty/null) - can't create a worktree."
+
+    # Repo-selection label (see _resolve_start_repo). Only meaningful when
+    # a prefix is configured; multiple matches are ambiguous, so warn and
+    # use the first (sorted) rather than fail - duplicate gitrepo labels
+    # are a labeling mistake, not a reason to block the task.
+    gitrepo_label_name=""
+    if [ -n "$repo_label_prefix" ] ; then
+        local match_count
+        match_count="$(printf '%s' "$issue_json" | jq --arg p "$repo_label_prefix" \
+            '[.labels.nodes[]?.name | select(startswith($p))] | length')"
+        if [ "$match_count" -gt 0 ] ; then
+            gitrepo_label_name="$(printf '%s' "$issue_json" | jq -r --arg p "$repo_label_prefix" \
+                '[.labels.nodes[]?.name | select(startswith($p))] | sort | first')"
+            gitrepo_label_name="${gitrepo_label_name#"$repo_label_prefix"}"
+            if [ "$match_count" -gt 1 ] ; then
+                _info "Note: $identifier has $match_count '${repo_label_prefix}*' labels - using '${repo_label_prefix}${gitrepo_label_name}'."
+            fi
+        fi
+    fi
 }
 
 # Sets globals: lower_id, worktree_dir, session.
@@ -640,6 +727,7 @@ _compute_paths () {
 _report_plan () {
     _info "Starting $identifier: $title"
     _info "  $url"
+    _info "Repo:      $REPO_NAME ($ROOTDIR)"
     _info "Branch:    $branch"
     _info "Worktree:  $worktree_dir"
     _info "Session:   $session"
@@ -1031,17 +1119,20 @@ _finish () {
 }
 
 cmd_start () {
-    # Repo-dependent state is resolved here rather than at startup, so
-    # `list` and `aws-preauth` work outside a git repo and never pay for
-    # git/network work they don't use (notably _detect_main_branch's
-    # ls-remote fallback).
-    _ensure_git_repo
-    MAIN_BRANCH="$(_detect_main_branch "$ROOTDIR")"
-    [ -n "$worktree_root" ] || worktree_root="$HOME/.local/ai-task/worktrees/$REPO_NAME"
-
+    # Repo-independent steps run first: the ticket - and with
+    # --repo-label-prefix set, its labels - determine which repo we work
+    # in, so Linear is consulted before any repo resolution. Repo-dependent
+    # state (MAIN_BRANCH, worktree_root default) is resolved after
+    # _resolve_start_repo, so `start` never pays for git/network work
+    # before it knows where it's operating (see _resolve_start_repo for
+    # the selection order).
     _pick_first_ticket
     _validate_start_inputs
     _fetch_issue "$ticket_id"
+    _resolve_start_repo
+    MAIN_BRANCH="$(_detect_main_branch "$ROOTDIR")"
+    [ -n "$worktree_root" ] || worktree_root="$HOME/.local/ai-task/worktrees/$REPO_NAME"
+
     _compute_paths
     _report_plan
 
@@ -1082,7 +1173,7 @@ cmd_start () {
 # Also sets: dry_run, first, ticket_id.
 _parse_options () {
     cli_team="" cli_label="" cli_assignee="" cli_no_assignee="" cli_state="" cli_cycle="" cli_no_cycle="" cli_sort=""
-    cli_priority="" cli_worktree_root="" cli_in_progress_state="" cli_blocked_state=""
+    cli_priority="" cli_repo="" cli_repo_label_prefix="" cli_repo_missing="" cli_worktree_root="" cli_in_progress_state="" cli_blocked_state=""
     cli_agent_type="" cli_permission_mode="" cli_model="" cli_agent_settings="" cli_aws_readonly="" cli_allowed_hosts="" cli_termic="" cli_prompt_file=""
     cli_prompt_extra="" cli_creds_loader="" cli_reuse_worktree="" dry_run=0 first=0
     # Ticket id (for `start`) is collected as a bare positional argument
@@ -1101,6 +1192,9 @@ _parse_options () {
             --no-cycle)            cli_no_cycle="true" ;;
             --sort)                shift; _require_value --sort "$#"; cli_sort="$1" ;;
             --priority)            shift; _require_value --priority "$#"; cli_priority="$1" ;;
+            --repo)                shift; _require_value --repo "$#"; cli_repo="$1" ;;
+            --repo-label-prefix)   shift; _require_value --repo-label-prefix "$#"; cli_repo_label_prefix="$1" ;;
+            --repo-missing)        shift; _require_value --repo-missing "$#"; cli_repo_missing="$1" ;;
             --worktree-root)       shift; _require_value --worktree-root "$#"; cli_worktree_root="$1" ;;
             --in-progress-state)   shift; _require_value --in-progress-state "$#"; cli_in_progress_state="$1" ;;
             --blocked-state)       shift; _require_value --blocked-state "$#"; cli_blocked_state="$1" ;;
@@ -1143,6 +1237,9 @@ _resolve_options () {
     no_cycle="$(_resolve AITASK_NO_CYCLE "$cli_no_cycle" "false")"
     sort="$(_resolve AITASK_SORT "$cli_sort" "priority" LINEAR_ISSUE_SORT)"
     priority="$(_resolve AITASK_PRIORITY "$cli_priority" "")"
+    repo="$(_resolve AITASK_REPO "$cli_repo" "")"
+    repo_label_prefix="$(_resolve AITASK_REPO_LABEL_PREFIX "$cli_repo_label_prefix" "")"
+    repo_missing="$(_resolve AITASK_REPO_MISSING "$cli_repo_missing" "prompt")"
     # Default is filled in by cmd_start once REPO_NAME is known - resolving
     # it here would force git-repo detection (and its network touch) onto
     # commands that never create a worktree.
@@ -1180,6 +1277,12 @@ _validate_options () {
             *) _die "Invalid --termic '$termic_action' - currently the only supported action is 'new-task'" ;;
         esac
     fi
+
+    # Validate --repo-missing early so a typo in a config file fails fast.
+    case "$repo_missing" in
+        prompt|fail|cwd) ;;
+        *) _die "Invalid --repo-missing '$repo_missing' - must be 'prompt', 'fail', or 'cwd'" ;;
+    esac
 
     if [ "$cmd" = "start" ] ; then
         _require_cmd "$agent_type" "selected via --agent-type"
@@ -1259,6 +1362,11 @@ _ensure_team_configured () {
 }
 
 # Sets globals: ROOTDIR, REPO_NAME.
+#
+# The cwd-based repo resolution - the original (and still default) path:
+# whatever repo the current directory belongs to. Also used by the
+# --repo-missing cwd policy and the prompt fallback for non-terminals;
+# label/array-driven resolution goes through _resolve_start_repo below.
 _ensure_git_repo () {
     ROOTDIR="$(git rev-parse --show-toplevel 2>/dev/null)" || {
         _err "Not inside a git repository. cd into the repo you want to automate and try again."
@@ -1268,6 +1376,157 @@ _ensure_git_repo () {
     # worktree path is stable regardless of which worktree this is run from.
     REPO_NAME="$(basename -s .git "$(git -C "$ROOTDIR" remote get-url origin)")" \
         || _die "Couldn't read the 'origin' remote of $ROOTDIR - can't derive the repo name."
+}
+
+# ── start: repo resolution (gitrepo labels / AITASK_REPO_DIRS) ───────────────
+
+# _require_repo_dirs_array
+#
+# Dies unless AITASK_REPO_DIRS is a usable associative array (bash >= 4
+# and actually declared - see the pre-declaration near _AITASK_VARS).
+_require_repo_dirs_array () {
+    declare -p AITASK_REPO_DIRS 2>/dev/null | grep -q 'declare -A' || {
+        _die "AITASK_REPO_DIRS is not configured (or bash < 4 is in use, which can't hold an associative array). Add 'AITASK_REPO_DIRS[name]=/path/to/checkout' entries to your ai-task config file."
+    }
+}
+
+# _repo_dirs_keys -> space-safe list via "${!AITASK_REPO_DIRS[@]}" is
+# handled inline by callers; this helper returns a human-readable
+# comma list for error messages.
+_repo_dirs_keys () {
+    local k out=""
+    for k in "${!AITASK_REPO_DIRS[@]}" ; do out+="$k, " ; done
+    printf '%s' "${out%, }"
+}
+
+# _adopt_repo_dir DIR
+#
+# Sets globals ROOTDIR/REPO_NAME from a local checkout directory, after
+# verifying it's a git repo with an origin remote. Shared by the label,
+# --repo, and prompt resolution paths so the default worktree-root naming
+# (which keys off REPO_NAME) is identical no matter how the repo was
+# chosen.
+_adopt_repo_dir () {
+    local dir="$1"
+    ROOTDIR="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" \
+        || _die "'$dir' is not a git repository."
+    REPO_NAME="$(basename -s .git "$(git -C "$ROOTDIR" remote get-url origin)")" \
+        || _die "Couldn't read the 'origin' remote of $ROOTDIR - can't derive the repo name."
+    _info "Using repo $REPO_NAME at $ROOTDIR"
+}
+
+# _repo_dir_from_name NAME
+#
+# Resolves NAME via AITASK_REPO_DIRS and calls _adopt_repo_dir on the
+# mapped directory. Dies with the configured keys listed when NAME is
+# missing.
+_repo_dir_from_name () {
+    local name="$1" dir keys
+    _require_repo_dirs_array
+    dir="${AITASK_REPO_DIRS[$name]:-}"
+    if [ -z "$dir" ] ; then
+        keys="$(_repo_dirs_keys)"
+        _die "No AITASK_REPO_DIRS entry for '$name' (configured: ${keys:-none})."
+    fi
+    [ -d "$dir" ] || _die "AITASK_REPO_DIRS[$name] points at '$dir', which doesn't exist."
+    _adopt_repo_dir "$dir"
+}
+
+# _prompt_for_repo
+#
+# Interactive repo chooser for the prompt policy: lists AITASK_REPO_DIRS
+# entries (plus the current directory's repo, when there is one), reads a
+# choice, and dispatches. The answer can be a menu number, a configured
+# NAME, or a filesystem path to any git checkout. Stdin not a terminal ->
+# no prompt possible: fall back to the current dir's repo when there is
+# one, else die.
+_prompt_for_repo () {
+    local names=() descs=() k i answer have_cwd=0
+    if declare -p AITASK_REPO_DIRS 2>/dev/null | grep -q 'declare -A' ; then
+        for k in "${!AITASK_REPO_DIRS[@]}" ; do
+            names+=("$k")
+            descs+=("${AITASK_REPO_DIRS[$k]}")
+        done
+    fi
+    if git rev-parse --show-toplevel >/dev/null 2>&1 ; then
+        have_cwd=1
+        names+=("<current dir>")
+        descs+=("$(pwd)")
+    fi
+    if [ ! -t 0 ] ; then
+        if [ "$have_cwd" = "1" ] ; then
+            _info "No '${repo_label_prefix}*' label on $identifier, stdin isn't a terminal - using the current directory's repo."
+            _ensure_git_repo
+            return
+        fi
+        _die "No '${repo_label_prefix}*' label on $identifier, stdin isn't a terminal, and the current directory isn't a git repo - can't choose a repo to start in."
+    fi
+    [ ${#names[@]} -gt 0 ] || _die "No repos to offer: AITASK_REPO_DIRS has no entries and the current directory isn't a git repo."
+
+    printf "Issue %s has no '%s*' label. Start it in which repo?\n" "$identifier" "$repo_label_prefix" 1>&2
+    for (( i = 0 ; i < ${#names[@]} ; i++ )) ; do
+        printf '  %d) %-20s %s\n' "$((i + 1))" "${names[$i]}" "${descs[$i]}" 1>&2
+    done
+    printf "Enter number, name, or path: " 1>&2
+    read -r answer || _die "No answer."
+    [ -n "$answer" ] || _die "No answer."
+
+    case "$answer" in
+        *[!0-9]*|"") ;;  # not a pure number - handled as name/path below
+        *)
+            [ "$answer" -ge 1 ] && [ "$answer" -le ${#names[@]} ] \
+                || _die "No such menu choice: $answer"
+            answer="${names[$((answer - 1))]}"
+            ;;
+    esac
+
+    if [ "$answer" = "<current dir>" ] ; then
+        _ensure_git_repo
+        return
+    fi
+    if declare -p AITASK_REPO_DIRS 2>/dev/null | grep -q 'declare -A' \
+        && [ -n "${AITASK_REPO_DIRS[$answer]:-}" ] ; then
+        _repo_dir_from_name "$answer"
+        return
+    fi
+    if [ -d "$answer" ] ; then
+        _adopt_repo_dir "$answer"
+        return
+    fi
+    _die "Don't know what to do with '$answer' - expected a menu number, a configured AITASK_REPO_DIRS name, or a directory."
+}
+
+# _resolve_start_repo
+#
+# Decides which git repo `start` operates on and sets globals ROOTDIR and
+# REPO_NAME (the same globals _ensure_git_repo sets). Resolution order:
+#   1. --repo NAME / AITASK_REPO      - explicit lookup in AITASK_REPO_DIRS;
+#                                       wins over labels and everything else
+#   2. <prefix><NAME> Linear label    - only when --repo-label-prefix /
+#                                       AITASK_REPO_LABEL_PREFIX is set;
+#                                       NAME looked up in AITASK_REPO_DIRS
+#   3. --repo-missing policy          - no matching label: prompt (default;
+#                                       falls back to the current dir's repo
+#                                       when stdin isn't a terminal), fail,
+#                                       or cwd
+#   4. prefix unset (default)         - the original behavior: the current
+#                                       directory's repo, error if not in one
+_resolve_start_repo () {
+    if [ -n "$repo" ] ; then
+        _info "Using --repo override: $repo"
+        _repo_dir_from_name "$repo"
+    elif [ -z "$repo_label_prefix" ] ; then
+        _ensure_git_repo
+    elif [ -n "$gitrepo_label_name" ] ; then
+        _info "Issue has label '${repo_label_prefix}${gitrepo_label_name}' - using that repo."
+        _repo_dir_from_name "$gitrepo_label_name"
+    else
+        case "$repo_missing" in
+            fail) _die "$identifier has no '${repo_label_prefix}*' label (--repo-missing fail) - not starting." ;;
+            cwd)  _ensure_git_repo ;;
+            *)    _prompt_for_repo ;;
+        esac
+    fi
 }
 
 main () {
