@@ -39,13 +39,17 @@ ISSUE_FIELDS = ",".join([
 ])
 
 # Priority tiers, also used to group checklist displays with divider rows.
-GH_TIERS = [
+# Things others need from you: their PRs to review, then comments to answer.
+WAITING_TIERS = [
     ("review_requested", "Review requested of you"),
+    ("review_requested_optional", "Already approved by someone else — optional"),
+    ("comment", "Comment awaiting your response"),
+]
+# Your authored PRs that need an action from you.
+YOUR_PR_TIERS = [
     ("approved", "Approved — ready to merge"),
     ("changes_requested", "Changes requested"),
-    ("comment", "Comment awaiting your response"),
     ("draft", "Draft"),
-    ("review_requested_optional", "Already approved by someone else — optional"),
 ]
 THEM_TIERS = [
     ("awaiting_review", "Awaiting first review"),
@@ -512,7 +516,7 @@ def build_snapshot(linear_assignee, progress=None):
 
     p(92, "Classifying...")
 
-    your_turn, their_turn = [], []
+    waiting_for_you, your_prs_action, your_prs_waiting = [], [], []
     for pr in my_prs:
         if assigned_to_someone_else(pr, my_login):
             continue
@@ -522,18 +526,26 @@ def build_snapshot(linear_assignee, progress=None):
             "type": "pr", "number": pr["number"], "title": pr["title"], "url": pr["url"],
             "repo": pr["repo"], "body": pr.get("body") or "", "reason": reason,
             "reason_kind": reason_kind, "created_at": pr["createdAt"],
-            "activity_at": activity_at, "tickets": tickets,
+            "activity_at": activity_at, "tickets": tickets, "relation": "author",
         }
-        (your_turn if turn == "you" else their_turn).append(item)
+        if reason_kind == "comment":
+            # Someone else is waiting on your reply, even though you authored the PR.
+            item["waiting_kind"] = "comment"
+            waiting_for_you.append(item)
+        elif turn == "you":
+            your_prs_action.append(item)
+        else:
+            your_prs_waiting.append(item)
 
     for pr in review_requested_prs:
         tickets = sorted(extract_linear_ids(team_keys, pr.get("body"), pr.get("headRefName")))
         reason, reason_kind = classify_review_request(pr, my_login)
-        your_turn.append({
+        waiting_for_you.append({
             "type": "pr", "number": pr["number"], "title": pr["title"], "url": pr["url"],
             "repo": pr["repo"], "body": pr.get("body") or "", "reason": reason,
             "reason_kind": reason_kind, "created_at": pr["createdAt"],
             "activity_at": pr["createdAt"], "tickets": tickets,
+            "relation": "reviewer", "waiting_kind": "review",
         })
 
     closeable, in_progress_with_pr, in_progress_no_pr = [], [], []
@@ -564,8 +576,9 @@ def build_snapshot(linear_assignee, progress=None):
     todo = [issue_item(i) for i in todo_issues]
     gh_issue_items = [gh_issue_item(i) for i in gh_issues]
 
-    your_turn.sort(key=lambda x: x["activity_at"], reverse=True)
-    their_turn.sort(key=lambda x: x["activity_at"], reverse=True)
+    waiting_for_you.sort(key=lambda x: x["activity_at"], reverse=True)
+    your_prs_action.sort(key=lambda x: x["activity_at"], reverse=True)
+    your_prs_waiting.sort(key=lambda x: x["activity_at"], reverse=True)
     for lst in (closeable, in_progress_with_pr, in_progress_no_pr, blocked_list,
                 blocking_others, todo, gh_issue_items):
         lst.sort(key=lambda x: x["updated_at"], reverse=True)
@@ -574,8 +587,9 @@ def build_snapshot(linear_assignee, progress=None):
     return {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "linear_assignee": linear_assignee,
-        "your_turn": your_turn,
-        "their_turn": their_turn,
+        "waiting_for_you": waiting_for_you,
+        "your_prs_action": your_prs_action,
+        "your_prs_waiting": your_prs_waiting,
         "closeable": closeable,
         "in_progress_with_pr": in_progress_with_pr,
         "in_progress_no_pr": in_progress_no_pr,
@@ -609,8 +623,9 @@ def load_cache():
 
 
 ALL_BUCKETS = (
-    "your_turn", "their_turn", "closeable", "in_progress_with_pr",
-    "in_progress_no_pr", "blocked", "blocking_others", "todo", "gh_issues",
+    "waiting_for_you", "your_prs_action", "your_prs_waiting",
+    "closeable", "in_progress_with_pr", "in_progress_no_pr",
+    "blocked", "blocking_others", "todo", "gh_issues",
 )
 
 
@@ -677,17 +692,25 @@ def flat_rows(items):
 
 
 def github_priority_queue(data):
+    """Waiting-for-you first (reviews, then comments), then your actionable PRs, then
+    issues assigned to you."""
     queue = []
-    for key, _ in GH_TIERS:
-        tier_items = [i for i in data["your_turn"] if i["reason_kind"] == key]
-        queue.extend(sorted(tier_items, key=lambda x: x["activity_at"], reverse=True))
+    for tiers, bucket in ((WAITING_TIERS, "waiting_for_you"), (YOUR_PR_TIERS, "your_prs_action")):
+        for key, _ in tiers:
+            tier_items = [i for i in data.get(bucket, []) if i["reason_kind"] == key]
+            queue.extend(sorted(tier_items, key=lambda x: x["activity_at"], reverse=True))
     # Assigned GitHub issues come after PR tiers -- PRs awaiting your action block others.
     queue.extend(sorted(data.get("gh_issues", []), key=lambda x: x["updated_at"], reverse=True))
     return queue
 
 
 def linear_priority_queue(data):
-    tiers = [data["closeable"], data["blocking_others"], data["in_progress_no_pr"], data["todo"]]
+    tiers = [
+        data.get("closeable", []),
+        data.get("blocking_others", []),
+        data.get("in_progress_with_pr", []) + data.get("in_progress_no_pr", []),
+        data.get("todo", []),
+    ]
     queue = []
     for tier in tiers:
         queue.extend(sorted(tier, key=lambda x: x["updated_at"], reverse=True))
@@ -985,27 +1008,31 @@ def sectioned_rows(sections):
     return rows
 
 
-def your_turn_rows(data):
-    """Your open PRs needing action, plus Linear tickets where the action is yours too:
-    ready to close, or blocking other tickets."""
-    return sectioned_rows([
-        ("Your PRs", group_rows(data["your_turn"], GH_TIERS, lambda i: i["reason_kind"])),
-        ("Linear: probably ready to close", flat_rows(data["closeable"])),
-        ("Linear: blocking other tickets", flat_rows(data["blocking_others"])),
-    ])
+def waiting_for_you_rows(data):
+    """Others' work waiting on you: PRs where you're a requested reviewer, and comments
+    on your own PRs that someone else is waiting on you to answer. Reviews come first."""
+    return group_rows(data.get("waiting_for_you", []), WAITING_TIERS, lambda i: i["reason_kind"])
 
 
-def everything_else_rows(data):
-    """Everything waiting on someone/something other than you."""
+def your_work_rows(data):
+    """Work you authored or are assigned to, newest activity first within each group:
+    your PRs (needing action vs waiting on others), issues assigned to you, and Linear tickets."""
     in_progress_items = sorted(
-        [dict(it, _group="with_pr") for it in data["in_progress_with_pr"]]
-        + [dict(it, _group="no_pr") for it in data["in_progress_no_pr"]],
+        [dict(it, _group="with_pr") for it in data.get("in_progress_with_pr", [])]
+        + [dict(it, _group="no_pr") for it in data.get("in_progress_no_pr", [])],
         key=lambda x: x["updated_at"], reverse=True,
     )
     return sectioned_rows([
-        ("Waiting on others", group_rows(data["their_turn"], THEM_TIERS, lambda i: i["reason_kind"])),
-        ("Linear: in progress / code review", group_rows(in_progress_items, IN_PROGRESS_TIERS, lambda i: i["_group"])),
-        ("Linear: blocked", flat_rows(data["blocked"])),
+        ("Your PRs — needs your action",
+         group_rows(data.get("your_prs_action", []), YOUR_PR_TIERS, lambda i: i["reason_kind"])),
+        ("Your PRs — waiting on others",
+         group_rows(data.get("your_prs_waiting", []), THEM_TIERS, lambda i: i["reason_kind"])),
+        ("GitHub issues assigned to you", flat_rows(data.get("gh_issues", []))),
+        ("Linear: ready to close", flat_rows(data.get("closeable", []))),
+        ("Linear: blocking other tickets", flat_rows(data.get("blocking_others", []))),
+        ("Linear: in progress / code review",
+         group_rows(in_progress_items, IN_PROGRESS_TIERS, lambda i: i["_group"])),
+        ("Linear: blocked", flat_rows(data.get("blocked", []))),
     ])
 
 
@@ -1016,44 +1043,36 @@ def see_results_menu():
         return
     mark_seen(data)  # visiting here is what resets the "N items changed" count on the main menu
 
-    yt_rows = your_turn_rows(data)
-    other_rows = everything_else_rows(data)
-    todo_rows = flat_rows(data["todo"])
-    gh_issue_rows = flat_rows(data.get("gh_issues", []))
+    waiting_rows = waiting_for_you_rows(data)
+    work_rows = your_work_rows(data)
+    todo_rows = flat_rows(data.get("todo", []))
 
     while True:
         choice = menu(
             "Choose a view:",
             [
                 CANCEL,
-                ("your_turn", f"Your turn ({count_items(yt_rows)})"),
-                ("gh_issues", f"GitHub issues assigned to you ({count_items(gh_issue_rows)})"),
-                ("everything_else", f"Everything else ({count_items(other_rows)})"),
+                ("waiting", f"Waiting for you ({count_items(waiting_rows)})"),
+                ("your_work", f"Your work ({count_items(work_rows)})"),
                 ("todo", f"Todo ({count_items(todo_rows)})"),
             ],
             dialog_title=f"See Results (fetched {fmt_fetched_at(data)})", help_text=SEE_RESULTS_HELP,
         )
         if choice in (None, CANCEL[0]):
             return
-        if choice == "your_turn":
+        if choice == "waiting":
             category_checklist(
-                "Your turn", yt_rows,
-                "Where you need to act: respond to a review request, merge an approval, address "
-                "changes requested, answer a comment, close a done ticket, or unblock a ticket "
-                "that's blocking others. Grouped by priority tier / category.",
+                "Waiting for you", waiting_rows,
+                "Others' work waiting on you: PR review requests, then comments on your PRs "
+                "awaiting your response. Checking a '-----' divider does nothing.",
             )
-        elif choice == "gh_issues":
+        elif choice == "your_work":
             category_checklist(
-                "GitHub issues", gh_issue_rows,
-                "Open GitHub issues assigned to you, in any repo you can access.",
-            )
-        elif choice == "everything_else":
-            category_checklist(
-                "Everything else", other_rows,
-                "Everything waiting on someone/something other than you: PRs waiting on a "
-                "reviewer, and Linear tickets in progress or blocked. '=====' rows are category "
-                "dividers, '-----' rows are sub-group dividers within a category -- checking "
-                "either does nothing.",
+                "Your work", work_rows,
+                "Work you authored or are assigned to: your PRs (needing your action, then "
+                "waiting on others), GitHub issues assigned to you, and your Linear tickets. "
+                "'=====' rows are category dividers, '-----' rows are sub-group dividers -- "
+                "checking either does nothing.",
             )
         elif choice == "todo":
             category_checklist("Todo", todo_rows, "Linear tickets not yet started.")
@@ -1086,8 +1105,9 @@ def do_get_latest(linear_assignee):
     save_cache(data)
     msgbox(
         f"Fetched at {fmt_fetched_at(data)}\n\n"
-        f"Your turn: {len(data['your_turn'])}\n"
-        f"Waiting on others: {len(data['their_turn'])}\n"
+        f"Waiting for you: {len(data['waiting_for_you'])}\n"
+        f"Your PRs needing action: {len(data['your_prs_action'])}\n"
+        f"Your PRs waiting on others: {len(data['your_prs_waiting'])}\n"
         f"GitHub issues assigned: {len(data['gh_issues'])}\n"
         f"Linear ready to close: {len(data['closeable'])}\n"
         f"Linear in progress w/ PR: {len(data['in_progress_with_pr'])}\n"
