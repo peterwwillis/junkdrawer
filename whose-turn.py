@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Dialog-based TUI that cross-references your open GitHub PRs and Linear issues to show whose turn it is."""
+"""Dialog-based TUI that cross-references your open GitHub PRs, GitHub issues assigned to
+you (across every repo you can access), and Linear issues to show whose turn it is."""
 import argparse
 import concurrent.futures
+import fcntl
 import getpass
 import json
 import os
@@ -21,6 +23,7 @@ CACHE_DIR = Path.home() / ".cache" / "whose-turn"
 CACHE_PATH = CACHE_DIR / "cache.json"
 SEEN_PATH = CACHE_DIR / "seen.json"
 CONFIG_PATH = Path.home() / ".config" / "whose-turn" / "config.json"
+LOCK_PATH = CACHE_DIR / "lock"
 CANCEL = ("__cancel__", "Cancel")
 
 BOT_LOGINS = {"github-actions", "linear", "dependabot", "renovate"}
@@ -31,14 +34,22 @@ PR_FIELDS = ",".join([
     "reviews", "comments", "commits", "headRefName", "body", "createdAt", "assignees",
 ])
 
+ISSUE_FIELDS = ",".join([
+    "number", "title", "url", "body", "createdAt", "updatedAt", "state",
+])
+
 # Priority tiers, also used to group checklist displays with divider rows.
-GH_TIERS = [
+# Things others need from you: their PRs to review, then comments to answer.
+WAITING_TIERS = [
     ("review_requested", "Review requested of you"),
+    ("review_requested_optional", "Already approved by someone else — optional"),
+    ("comment", "Comment awaiting your response"),
+]
+# Your authored PRs that need an action from you.
+YOUR_PR_TIERS = [
     ("approved", "Approved — ready to merge"),
     ("changes_requested", "Changes requested"),
-    ("comment", "Comment awaiting your response"),
     ("draft", "Draft"),
-    ("review_requested_optional", "Already approved by someone else — optional"),
 ]
 THEM_TIERS = [
     ("awaiting_review", "Awaiting first review"),
@@ -51,7 +62,9 @@ IN_PROGRESS_TIERS = [
 ]
 
 MAIN_HELP = (
-    "Whose Turn tracks who needs to act next on your GitHub PRs and Linear issues.\n\n"
+    "Whose Turn tracks who needs to act next on your GitHub PRs, GitHub issues assigned "
+    "to you, and Linear issues -- across every repo you can access (GitHub search is not "
+    "repo-bound).\n\n"
     "Get latest: run all GitHub/Linear queries and cache the result.\n"
     "See results: browse the cached data by category.\n"
     "Next GitHub/Linear item to work on: walk a single-item priority queue of what to do next.\n\n"
@@ -74,6 +87,43 @@ NEXT_HELP = (
 
 class FetchError(Exception):
     pass
+
+
+class LockHeld(Exception):
+    pass
+
+
+# ---------- single-instance lock ----------
+
+_LOCK_FD = None
+
+
+def acquire_instance_lock(ignore):
+    """Default to one running instance: take an exclusive non-blocking flock on LOCK_PATH.
+    The kernel releases the lock automatically whenever the holder exits -- even on crash
+    or kill -- so a leftover lock file can never wedge the next launch. The fd is kept
+    open for the process's lifetime; closing it would drop the lock."""
+    global _LOCK_FD
+    if ignore:
+        return
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            holder = int(os.read(fd, 64).strip() or 0)
+        except ValueError:
+            holder = 0
+        os.close(fd)
+        raise LockHeld(
+            f"Another instance of {APP_TITLE} is already running"
+            + (f" (pid {holder})" if holder else "")
+            + ".\nRun again with --ignore-lock to bypass this check."
+        )
+    os.ftruncate(fd, 0)
+    os.write(fd, f"{os.getpid()}\n".encode())
+    _LOCK_FD = fd
 
 
 # ---------- shell helpers ----------
@@ -142,20 +192,75 @@ def extract_linear_ids(team_keys, *texts):
     return ids
 
 
-def fetch_my_open_prs():
-    return json.loads(run([
-        "gh", "pr", "list", "--author", "@me", "--state", "open",
-        "--json", PR_FIELDS, "--limit", "30",
-    ]))
+SEARCH_LIMIT = 50
 
 
-def fetch_review_requested_prs():
-    # draft:false -- a draft isn't actually ready for your review yet, even if requested
+def search_open_prs(*qualifiers):
+    """Open PRs across every repo you can access -- GitHub search, unlike gh pr list,
+    is not bound to the cwd's repo. Returns [{number, url}]; details come later."""
     out = run([
-        "gh", "pr", "list", "--search", "review-requested:@me is:open draft:false",
-        "--json", PR_FIELDS, "--limit", "30",
+        "gh", "search", "prs", "--state", "open", "--sort", "updated", "--order", "desc",
+        "--limit", str(SEARCH_LIMIT), "--json", "number,url",
+    ] + list(qualifiers))
+    return json.loads(out) if out.strip() else []
+
+
+def search_my_open_prs():
+    return search_open_prs("--author", "@me")
+
+
+def search_review_requested_prs():
+    # draft:false -- a draft isn't actually ready for your review yet, even if requested
+    return search_open_prs("--review-requested", "@me", "--draft=false")
+
+
+def search_assigned_issues():
+    """Open GitHub issues assigned to you, any repo. (gh search issues excludes PRs
+    unless --include-prs is passed.)"""
+    out = run([
+        "gh", "search", "issues", "--assignee", "@me", "--state", "open", "--sort", "updated",
+        "--order", "desc", "--limit", str(SEARCH_LIMIT), "--json", "number,url",
     ])
     return json.loads(out) if out.strip() else []
+
+
+def repo_from_url(url):
+    """owner/name from https://github.com/owner/name/(pull|issues)/N."""
+    return "/".join(url.split("/")[-4:-2])
+
+
+def fetch_details(urls, kind, fields, progress=None):
+    """[url, ...] -> [full `gh {kind} view` dicts, each with `repo` added]. Items that
+    can't be fetched (e.g. closed between search and view) are skipped; failing on every
+    URL means something systemic (auth, network), so raise rather than return empty."""
+    if not urls:
+        return []
+    total = len(urls)
+
+    def fetch_one(url):
+        try:
+            detail = json.loads(run(["gh", kind, "view", url, "--json", fields]))
+            detail["repo"] = repo_from_url(url)
+            return detail
+        except FetchError as e:
+            return e
+
+    results, errors = [], []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(fetch_one, url) for url in urls]
+        for done, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+            result = future.result()
+            if progress:
+                progress(done, total)
+            if isinstance(result, FetchError):
+                errors.append(str(result))
+            else:
+                results.append(result)
+    if not results:
+        raise FetchError(
+            f"could not fetch details for any of {total} {kind}s; last error:\n{errors[-1]}"
+        )
+    return results
 
 
 def linear_query(assignee, state_type):
@@ -333,6 +438,14 @@ def issue_item(issue):
     }
 
 
+def gh_issue_item(issue):
+    return {
+        "type": "gh_issue", "number": issue["number"], "title": issue["title"],
+        "url": issue["url"], "repo": issue.get("repo", ""), "body": issue.get("body") or "",
+        "created_at": issue["createdAt"], "updated_at": issue["updatedAt"],
+    }
+
+
 def run_parallel(tasks, on_done=None):
     """tasks: {name: callable}. Returns {name: result}; a raised exception propagates
     from .result() once every task has been collected."""
@@ -359,8 +472,9 @@ def build_snapshot(linear_assignee, progress=None):
     my_login, team_keys = base["my_login"], base["team_keys"]
 
     fetch_tasks = {
-        "my_prs": fetch_my_open_prs,
-        "review_requested_prs": fetch_review_requested_prs,
+        "my_pr_candidates": search_my_open_prs,
+        "review_requested_candidates": search_review_requested_prs,
+        "assigned_gh_issues": search_assigned_issues,
         "started_issues": lambda: linear_query(linear_assignee, "started"),
         "todo_issues": lambda: linear_query(linear_assignee, "unstarted"),
     }
@@ -374,19 +488,35 @@ def build_snapshot(linear_assignee, progress=None):
     p(15, f"Fetching {len(fetch_tasks)} data sources in parallel...")
     fresh = run_parallel(fetch_tasks, on_done=on_done)
 
-    my_prs = fresh["my_prs"]
-    review_requested_prs = fresh["review_requested_prs"]
+    # A PR you authored that also has a review requested of you counts once, as
+    # review-requested -- that's the actionable classification.
+    review_requested_urls = {c["url"] for c in fresh["review_requested_candidates"]}
+    pr_urls = [c["url"] for c in fresh["my_pr_candidates"] if c["url"] not in review_requested_urls]
+    pr_urls += sorted(review_requested_urls)
+    gh_issue_urls = [c["url"] for c in fresh["assigned_gh_issues"]]
+
+    p(70, f"Fetching details for {len(pr_urls)} PRs and {len(gh_issue_urls)} GitHub issues...")
+    details = run_parallel({
+        "pr_details": lambda: fetch_details(pr_urls, "pr", PR_FIELDS,
+            lambda d, t: p(70 + round(10 * d / max(t, 1)), f"PR details ({d}/{t})")),
+        "gh_issue_details": lambda: fetch_details(gh_issue_urls, "issue", ISSUE_FIELDS,
+            lambda d, t: p(80 + round(5 * d / max(t, 1)), f"Issue details ({d}/{t})")),
+    })
+
+    my_prs = [d for d in details["pr_details"] if d["url"] not in review_requested_urls]
+    review_requested_prs = [d for d in details["pr_details"] if d["url"] in review_requested_urls]
+    gh_issues = details["gh_issue_details"]
     started_issues = fresh["started_issues"]
     todo_issues = fresh["todo_issues"]
 
-    p(75, "Checking Linear blocking relations and attached PRs...")
+    p(87, "Checking Linear blocking relations and attached PRs...")
     started_ids = [i["identifier"] for i in started_issues]
     blocking_map = fetch_blocking_relations(started_ids)
     pr_attachments = fetch_pr_attachments(started_ids)
 
     p(92, "Classifying...")
 
-    your_turn, their_turn = [], []
+    waiting_for_you, your_prs_action, your_prs_waiting = [], [], []
     for pr in my_prs:
         if assigned_to_someone_else(pr, my_login):
             continue
@@ -394,18 +524,28 @@ def build_snapshot(linear_assignee, progress=None):
         tickets = sorted(extract_linear_ids(team_keys, pr.get("body"), pr.get("headRefName")))
         item = {
             "type": "pr", "number": pr["number"], "title": pr["title"], "url": pr["url"],
-            "body": pr.get("body") or "", "reason": reason, "reason_kind": reason_kind,
-            "created_at": pr["createdAt"], "activity_at": activity_at, "tickets": tickets,
+            "repo": pr["repo"], "body": pr.get("body") or "", "reason": reason,
+            "reason_kind": reason_kind, "created_at": pr["createdAt"],
+            "activity_at": activity_at, "tickets": tickets, "relation": "author",
         }
-        (your_turn if turn == "you" else their_turn).append(item)
+        if reason_kind == "comment":
+            # Someone else is waiting on your reply, even though you authored the PR.
+            item["waiting_kind"] = "comment"
+            waiting_for_you.append(item)
+        elif turn == "you":
+            your_prs_action.append(item)
+        else:
+            your_prs_waiting.append(item)
 
     for pr in review_requested_prs:
         tickets = sorted(extract_linear_ids(team_keys, pr.get("body"), pr.get("headRefName")))
         reason, reason_kind = classify_review_request(pr, my_login)
-        your_turn.append({
+        waiting_for_you.append({
             "type": "pr", "number": pr["number"], "title": pr["title"], "url": pr["url"],
-            "body": pr.get("body") or "", "reason": reason, "reason_kind": reason_kind,
-            "created_at": pr["createdAt"], "activity_at": pr["createdAt"], "tickets": tickets,
+            "repo": pr["repo"], "body": pr.get("body") or "", "reason": reason,
+            "reason_kind": reason_kind, "created_at": pr["createdAt"],
+            "activity_at": pr["createdAt"], "tickets": tickets,
+            "relation": "reviewer", "waiting_kind": "review",
         })
 
     closeable, in_progress_with_pr, in_progress_no_pr = [], [], []
@@ -422,7 +562,7 @@ def build_snapshot(linear_assignee, progress=None):
             blocking_others.append(item)
 
         prs = pr_attachments.get(issue["identifier"], [])
-        open_prs = [pr for pr in prs if pr["status"] == "open"]
+        open_prs = [pr for pr in prs if pr["status"] in ("open", "draft")]
         merged_prs = [pr for pr in prs if pr["status"] == "merged"]
         if open_prs:
             item["prs"] = open_prs
@@ -434,24 +574,29 @@ def build_snapshot(linear_assignee, progress=None):
             in_progress_no_pr.append(item)
 
     todo = [issue_item(i) for i in todo_issues]
+    gh_issue_items = [gh_issue_item(i) for i in gh_issues]
 
-    your_turn.sort(key=lambda x: x["activity_at"], reverse=True)
-    their_turn.sort(key=lambda x: x["activity_at"], reverse=True)
-    for lst in (closeable, in_progress_with_pr, in_progress_no_pr, blocked_list, blocking_others, todo):
+    waiting_for_you.sort(key=lambda x: x["activity_at"], reverse=True)
+    your_prs_action.sort(key=lambda x: x["activity_at"], reverse=True)
+    your_prs_waiting.sort(key=lambda x: x["activity_at"], reverse=True)
+    for lst in (closeable, in_progress_with_pr, in_progress_no_pr, blocked_list,
+                blocking_others, todo, gh_issue_items):
         lst.sort(key=lambda x: x["updated_at"], reverse=True)
 
     p(100, "Done")
     return {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "linear_assignee": linear_assignee,
-        "your_turn": your_turn,
-        "their_turn": their_turn,
+        "waiting_for_you": waiting_for_you,
+        "your_prs_action": your_prs_action,
+        "your_prs_waiting": your_prs_waiting,
         "closeable": closeable,
         "in_progress_with_pr": in_progress_with_pr,
         "in_progress_no_pr": in_progress_no_pr,
         "blocked": blocked_list,
         "blocking_others": blocking_others,
         "todo": todo,
+        "gh_issues": gh_issue_items,
     }
 
 
@@ -478,13 +623,18 @@ def load_cache():
 
 
 ALL_BUCKETS = (
-    "your_turn", "their_turn", "closeable", "in_progress_with_pr",
-    "in_progress_no_pr", "blocked", "blocking_others", "todo",
+    "waiting_for_you", "your_prs_action", "your_prs_waiting",
+    "closeable", "in_progress_with_pr", "in_progress_no_pr",
+    "blocked", "blocking_others", "todo", "gh_issues",
 )
 
 
 def item_key(item):
-    return f"pr:{item['number']}" if item["type"] == "pr" else f"issue:{item['identifier']}"
+    t = item["type"]
+    # PR numbers collide across repos, so keys are repo-qualified
+    if t in ("pr", "gh_issue"):
+        return f"{t}:{item.get('repo', '')}#{item['number']}"
+    return f"issue:{item['identifier']}"
 
 
 def build_fingerprints(data):
@@ -542,15 +692,25 @@ def flat_rows(items):
 
 
 def github_priority_queue(data):
+    """Waiting-for-you first (reviews, then comments), then your actionable PRs, then
+    issues assigned to you."""
     queue = []
-    for key, _ in GH_TIERS:
-        tier_items = [i for i in data["your_turn"] if i["reason_kind"] == key]
-        queue.extend(sorted(tier_items, key=lambda x: x["activity_at"], reverse=True))
+    for tiers, bucket in ((WAITING_TIERS, "waiting_for_you"), (YOUR_PR_TIERS, "your_prs_action")):
+        for key, _ in tiers:
+            tier_items = [i for i in data.get(bucket, []) if i["reason_kind"] == key]
+            queue.extend(sorted(tier_items, key=lambda x: x["activity_at"], reverse=True))
+    # Assigned GitHub issues come after PR tiers -- PRs awaiting your action block others.
+    queue.extend(sorted(data.get("gh_issues", []), key=lambda x: x["updated_at"], reverse=True))
     return queue
 
 
 def linear_priority_queue(data):
-    tiers = [data["closeable"], data["blocking_others"], data["in_progress_no_pr"], data["todo"]]
+    tiers = [
+        data.get("closeable", []),
+        data.get("blocking_others", []),
+        data.get("in_progress_with_pr", []) + data.get("in_progress_no_pr", []),
+        data.get("todo", []),
+    ]
     queue = []
     for tier in tiers:
         queue.extend(sorted(tier, key=lambda x: x["updated_at"], reverse=True))
@@ -665,10 +825,15 @@ def print_progress(pct, text):
 # ---------- rendering ----------
 
 def checklist_label(item):
-    if item["type"] == "pr":
-        label = f"#{item['number']} {item['title']} — {item['reason']} ({age_str(item['activity_at'])})"
+    t = item["type"]
+    if t == "pr":
+        label = (f"{item.get('repo', '')}#{item['number']} {item['title']}"
+                 f" — {item['reason']} ({age_str(item['activity_at'])})")
         if item.get("tickets"):
             label += f" [{', '.join(item['tickets'])}]"
+    elif t == "gh_issue":
+        label = (f"{item.get('repo', '')}#{item['number']} {item['title']}"
+                 f" (assigned, open) ({age_str(item['updated_at'])})")
     else:
         label = f"{item['identifier']} {item['title']} [{item['state']}] ({age_str(item['updated_at'])})"
         if item.get("blocked_by"):
@@ -695,11 +860,19 @@ def join_capped(values, limit=5):
 def item_lines(item):
     """Priority-ordered header/meta lines for the item (most important first)."""
     if item["type"] == "pr":
-        lines = [f"PR #{item['number']}: {item['title']}", f"Reason: {item['reason']}"]
+        lines = [f"{item.get('repo', '')} PR #{item['number']}: {item['title']}", f"Reason: {item['reason']}"]
         if item.get("tickets"):
             lines.append(f"Linear: {join_capped(item['tickets'])}")
         lines.append(f"URL: {item['url']}")
         lines.append(f"Created: {item['created_at']}")
+    elif item["type"] == "gh_issue":
+        lines = [
+            f"{item.get('repo', '')} issue #{item['number']}: {item['title']}",
+            "Open GitHub issue assigned to you",
+            f"URL: {item['url']}",
+            f"Created: {item.get('created_at', '')}",
+            f"Updated: {item.get('updated_at', '')}",
+        ]
     else:
         lines = [f"{item['identifier']}: {item['title']}", f"State: {item.get('state', '')}"]
         if item.get("blocked_by"):
@@ -719,7 +892,7 @@ def item_header_meta(item):
 
 
 def item_body(item):
-    if item["type"] == "pr":
+    if item["type"] in ("pr", "gh_issue"):
         return item.get("body") or "(no description)"
     try:
         return fetch_issue_description(item["identifier"])
@@ -835,27 +1008,31 @@ def sectioned_rows(sections):
     return rows
 
 
-def your_turn_rows(data):
-    """Your open PRs needing action, plus Linear tickets where the action is yours too:
-    ready to close, or blocking other tickets."""
-    return sectioned_rows([
-        ("Your PRs", group_rows(data["your_turn"], GH_TIERS, lambda i: i["reason_kind"])),
-        ("Linear: probably ready to close", flat_rows(data["closeable"])),
-        ("Linear: blocking other tickets", flat_rows(data["blocking_others"])),
-    ])
+def waiting_for_you_rows(data):
+    """Others' work waiting on you: PRs where you're a requested reviewer, and comments
+    on your own PRs that someone else is waiting on you to answer. Reviews come first."""
+    return group_rows(data.get("waiting_for_you", []), WAITING_TIERS, lambda i: i["reason_kind"])
 
 
-def everything_else_rows(data):
-    """Everything waiting on someone/something other than you."""
+def your_work_rows(data):
+    """Work you authored or are assigned to, newest activity first within each group:
+    your PRs (needing action vs waiting on others), issues assigned to you, and Linear tickets."""
     in_progress_items = sorted(
-        [dict(it, _group="with_pr") for it in data["in_progress_with_pr"]]
-        + [dict(it, _group="no_pr") for it in data["in_progress_no_pr"]],
+        [dict(it, _group="with_pr") for it in data.get("in_progress_with_pr", [])]
+        + [dict(it, _group="no_pr") for it in data.get("in_progress_no_pr", [])],
         key=lambda x: x["updated_at"], reverse=True,
     )
     return sectioned_rows([
-        ("Waiting on others", group_rows(data["their_turn"], THEM_TIERS, lambda i: i["reason_kind"])),
-        ("Linear: in progress / code review", group_rows(in_progress_items, IN_PROGRESS_TIERS, lambda i: i["_group"])),
-        ("Linear: blocked", flat_rows(data["blocked"])),
+        ("Your PRs — needs your action",
+         group_rows(data.get("your_prs_action", []), YOUR_PR_TIERS, lambda i: i["reason_kind"])),
+        ("Your PRs — waiting on others",
+         group_rows(data.get("your_prs_waiting", []), THEM_TIERS, lambda i: i["reason_kind"])),
+        ("GitHub issues assigned to you", flat_rows(data.get("gh_issues", []))),
+        ("Linear: ready to close", flat_rows(data.get("closeable", []))),
+        ("Linear: blocking other tickets", flat_rows(data.get("blocking_others", []))),
+        ("Linear: in progress / code review",
+         group_rows(in_progress_items, IN_PROGRESS_TIERS, lambda i: i["_group"])),
+        ("Linear: blocked", flat_rows(data.get("blocked", []))),
     ])
 
 
@@ -866,37 +1043,36 @@ def see_results_menu():
         return
     mark_seen(data)  # visiting here is what resets the "N items changed" count on the main menu
 
-    yt_rows = your_turn_rows(data)
-    other_rows = everything_else_rows(data)
-    todo_rows = flat_rows(data["todo"])
+    waiting_rows = waiting_for_you_rows(data)
+    work_rows = your_work_rows(data)
+    todo_rows = flat_rows(data.get("todo", []))
 
     while True:
         choice = menu(
             "Choose a view:",
             [
                 CANCEL,
-                ("your_turn", f"Your turn ({count_items(yt_rows)})"),
-                ("everything_else", f"Everything else ({count_items(other_rows)})"),
+                ("waiting", f"Waiting for you ({count_items(waiting_rows)})"),
+                ("your_work", f"Your work ({count_items(work_rows)})"),
                 ("todo", f"Todo ({count_items(todo_rows)})"),
             ],
             dialog_title=f"See Results (fetched {fmt_fetched_at(data)})", help_text=SEE_RESULTS_HELP,
         )
         if choice in (None, CANCEL[0]):
             return
-        if choice == "your_turn":
+        if choice == "waiting":
             category_checklist(
-                "Your turn", yt_rows,
-                "Where you need to act: respond to a review request, merge an approval, address "
-                "changes requested, answer a comment, close a done ticket, or unblock a ticket "
-                "that's blocking others. Grouped by priority tier / category.",
+                "Waiting for you", waiting_rows,
+                "Others' work waiting on you: PR review requests, then comments on your PRs "
+                "awaiting your response. Checking a '-----' divider does nothing.",
             )
-        elif choice == "everything_else":
+        elif choice == "your_work":
             category_checklist(
-                "Everything else", other_rows,
-                "Everything waiting on someone/something other than you: PRs waiting on a "
-                "reviewer, and Linear tickets in progress or blocked. '=====' rows are category "
-                "dividers, '-----' rows are sub-group dividers within a category -- checking "
-                "either does nothing.",
+                "Your work", work_rows,
+                "Work you authored or are assigned to: your PRs (needing your action, then "
+                "waiting on others), GitHub issues assigned to you, and your Linear tickets. "
+                "'=====' rows are category dividers, '-----' rows are sub-group dividers -- "
+                "checking either does nothing.",
             )
         elif choice == "todo":
             category_checklist("Todo", todo_rows, "Linear tickets not yet started.")
@@ -929,8 +1105,10 @@ def do_get_latest(linear_assignee):
     save_cache(data)
     msgbox(
         f"Fetched at {fmt_fetched_at(data)}\n\n"
-        f"Your turn: {len(data['your_turn'])}\n"
-        f"Waiting on others: {len(data['their_turn'])}\n"
+        f"Waiting for you: {len(data['waiting_for_you'])}\n"
+        f"Your PRs needing action: {len(data['your_prs_action'])}\n"
+        f"Your PRs waiting on others: {len(data['your_prs_waiting'])}\n"
+        f"GitHub issues assigned: {len(data['gh_issues'])}\n"
         f"Linear ready to close: {len(data['closeable'])}\n"
         f"Linear in progress w/ PR: {len(data['in_progress_with_pr'])}\n"
         f"Linear in progress no PR: {len(data['in_progress_no_pr'])}\n"
@@ -1024,10 +1202,21 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--linear-assignee", default=None, help="Linear displayName to query (overrides saved config)")
     ap.add_argument("--json", action="store_true", help="Fetch, cache, and dump raw JSON (no TUI)")
+    ap.add_argument("--ignore-lock", action="store_true",
+                    help="Skip the single-instance lock (allow a second instance to run alongside)")
     args = ap.parse_args()
 
     if not args.json and shutil.which("dialog") is None:
         sys.stderr.write("This tool requires the 'dialog' utility. Install with: brew install dialog\n")
+        sys.exit(1)
+
+    try:
+        acquire_instance_lock(args.ignore_lock)
+    except LockHeld as e:
+        if args.json:
+            sys.stderr.write(f"{e}\n")
+        else:
+            msgbox(str(e), title="Already running")
         sys.exit(1)
 
     config = load_config()
