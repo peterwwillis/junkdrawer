@@ -26,7 +26,7 @@ CONFIG_PATH = Path.home() / ".config" / "whose-turn" / "config.json"
 LOCK_PATH = CACHE_DIR / "lock"
 CANCEL = ("__cancel__", "Cancel")
 
-BOT_LOGINS = {"github-actions", "linear", "dependabot", "renovate"}
+BOT_LOGINS = {"github-actions", "linear", "linear-code", "dependabot", "renovate"}
 LINEAR_ID_RE = re.compile(r'\b([A-Z][A-Z0-9]{1,9}-\d+)\b')
 
 PR_FIELDS = ",".join([
