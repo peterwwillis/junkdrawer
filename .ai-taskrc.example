@@ -5,12 +5,14 @@
 #
 # Copy this to one of (name it either `ai-task.conf` or `.ai-taskrc` - both
 # names are checked at both scopes):
-#   $HOME/.config/ai-task/ai-task.conf   - your global defaults
-#   $HOME/.ai-taskrc                     - your global defaults (rc-style)
+#   $HOME/.config/ai-task/ai-task.conf   - your global defaults (preferred)
+#   $HOME/.config/ai-task/.ai-taskrc     - your global defaults (rc-style)
+#   $HOME/.ai-taskrc                     - legacy home location, still loaded
 #   $(pwd)/ai-task.conf                  - project-local overrides (e.g. repo root)
 #   $(pwd)/.ai-taskrc                    - project-local overrides (rc-style)
-# All present ones are loaded, home scope first, then cwd on top. An env
-# var you set for this specific invocation always wins over any of them.
+# All present ones are loaded, ~/.config/ai-task/ first, then ~/.ai-taskrc,
+# then cwd on top. An env var you set for this specific invocation always
+# wins over any of them.
 
 # Required - no hardcoded default. If unset here, you'll be prompted once
 # and the answer gets appended to this file (or created fresh if neither
@@ -63,20 +65,23 @@
 # role name for a repo with an AWS/terraform component, e.g.:
 # AITASK_AWS_ROLE_READONLY="ReadOnly-NoSecrets"
 
-# Credentials loader: a shell script SOURCED (not exec'd) by the agent's
-# shell right before the agent launches, to inject whatever credentials the
-# task needs. The agent now starts from an empty environment (env -i) -
-# nothing from your interactive terminal leaks in - so this is the
-# supported way to provide any. Off by default. Trusted input like
-# AITASK_PROMPT_FILE; runs inside the sandbox, so give it network via
-# AITASK_ALLOWED_HOSTS if it needs to fetch tokens. AWS ReadOnly mode's
-# own env exports are applied after it and take precedence. See
-# --creds-loader in `ai-task.sh --help`.
+# Credentials loader: a shell script SOURCED ONCE ON THE TRUSTED SIDE at
+# start time (before the worktree is created, in the launching shell where
+# 1Password/op, keychains, and SSO helpers are reachable). Vars it exports
+# are captured in memory and injected into the tmux session's environment -
+# nothing is written to disk. The agent starts from an empty environment
+# (env -i), so this is the supported way to provide credentials; the
+# loader-exported vars are re-added by name through the clean-env stage.
+# AUTO-DEFAULT: if this is unset, ~/.config/ai-task/creds.sh is used when
+# it exists. Trusted input like AITASK_PROMPT_FILE. Because the loader
+# runs OUTSIDE the sandbox, it needs no AITASK_ALLOWED_HOSTS entries for
+# its own network access. AWS ReadOnly mode's env exports are applied
+# after, so they take precedence.
 # AITASK_CREDS_LOADER="$HOME/.config/ai-task/creds.sh"
 
 # Comma-separated extra hosts for the sandbox network allowlist, on top of
-# the built-in defaults (github.com, linear.app, + AWS hosts if AWS
-# ReadOnly mode is on).
+# the built-in defaults (github.com, linear.app, *.datadoghq.com,
+# *.datadoghq.eu, + AWS hosts if AWS ReadOnly mode is on).
 # AITASK_ALLOWED_HOSTS="registry.npmjs.org,pypi.org"
 
 # After the tmux + agent are up, also register the worktree + AI session

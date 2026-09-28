@@ -9,9 +9,13 @@
 # `aws-preauth` command), and launches an autonomous AI session in tmux -
 # `claude` (default) or `opencode` (--agent-type opencode). The agent runs
 # in a pristine login shell (env -i, HOME/TERM/LANG only) so nothing from
-# your interactive terminal - exported credentials included - leaks in;
-# --creds-loader / AITASK_CREDS_LOADER points at a script that gets sourced
-# right before the agent launches to inject whatever credentials it needs.
+# your interactive terminal - exported credentials included - leaks in.
+# Credentials are injected via --creds-loader / AITASK_CREDS_LOADER: a
+# script SOURCED ONCE ON THE TRUSTED SIDE at start time (before the
+# worktree is created, where 1Password/op, keychains, SSO helpers are
+# reachable); the vars it exports are injected into the tmux session's
+# environment and re-added by name through the clean-env stage, so the
+# agent gets them without anything being written to disk.
 #
 # Repo selection for `start`: by default the task starts in whatever repo
 # the current directory belongs to. --repo-label-prefix (e.g. "gitrepo_")
@@ -38,6 +42,12 @@ REPO_NAME="<repo>"   # placeholder; resolved by cmd_start (best-effort in _usage
 # script-scope globals (team, label, ..., worktree_dir, session, ...).
 # Functions that set globals say so in their header comment; everything
 # else takes explicit arguments.
+
+# Creds-loader capture state (see _run_creds_loader). Initialized here so
+# _report_plan/_launch_tmux are safe under set -u even when the loader
+# never ran (not configured, or dry run).
+creds_env_names=""
+creds_env_args=()
 
 _err ()  { printf "%s: Error: %s\n" "$SCRIPT" "$*" 1>&2 ; }
 _info () { printf "%s: Info: %s\n" "$SCRIPT" "$*" 1>&2 ; }
@@ -179,20 +189,27 @@ has an AITASK_<NAME> env var equivalent):
                                           settings plus the required
                                           opencode-sandbox plugin entry -
                                           see README.md)
-  --creds-loader PATH         Path to a shell script sourced (not exec'd)
-                              by the agent's shell right before the agent
-                              launches, to inject credentials the task
-                              needs (cloud tokens, registry logins, ...).
-                              The agent starts from an empty environment
-                              (env -i; only HOME/TERM/locale vars and the
-                              login shell's profiles carry through), so
-                              nothing leaks in from this terminal unless
-                              you want it to - set it up here instead.
-                              Trusted input, same as --prompt-file. Runs
-                              inside the sandbox: if it needs network
-                              access, add the hosts via --allowed-hosts.
-                              AWS ReadOnly mode's own env exports are
-                              applied after it, so they take precedence.
+  --creds-loader PATH         Path to a shell script SOURCED ONCE ON THE
+                               TRUSTED SIDE at start time (before the
+                               worktree is created, in the launching shell
+                               where 1Password/op, keychains, and SSO
+                               helpers are reachable). Vars it exports are
+                               captured in memory and injected into the
+                               tmux session's environment - nothing is
+                               written to disk. The agent starts from an
+                               empty environment (env -i; only
+                               HOME/TERM/locale vars pass through), so
+                               nothing leaks in from this terminal -
+                               loader-exported vars are re-added by name.
+                               Defaults to
+                               ~/.config/ai-task/creds.sh when that file
+                               exists. Trusted input, same as
+                               --prompt-file. Because the loader runs
+                               OUTSIDE the sandbox, it needs no
+                               --allowed-hosts entries for its own network
+                               access (e.g. 1Password). AWS ReadOnly mode's
+                               env exports are applied after, so they take
+                               precedence.
   --aws-readonly-role ROLE     AWS ReadOnly mode: name of the read-only
                                AWS role (the ':Role' suffix of your aws-sso
                                profiles, e.g. "ReadOnly-NoSecrets") to
@@ -249,6 +266,7 @@ variables shown above). Name it either \`ai-task.conf\` or \`.ai-taskrc\`
 (rc-file style) - both are checked, at both scopes, loaded in order so
 later files win:
   \$HOME/.config/ai-task/ai-task.conf
+  \$HOME/.config/ai-task/.ai-taskrc
   \$HOME/.ai-taskrc
   \$(pwd)/ai-task.conf
   \$(pwd)/.ai-taskrc                    (project-local overrides, e.g. repo root)
@@ -717,6 +735,88 @@ _fetch_issue () {
     fi
 }
 
+# _snap_env_pairs
+#
+# Prints the current environment as a sorted JSON array of {name, value}
+# objects (NUL-separated via `env -0`, so values containing newlines,
+# "=" or spaces survive intact). Used by _run_creds_loader to diff the
+# environment before/after sourcing the creds loader. Values exist only
+# in this function's output, captured into a shell variable - never on
+# disk.
+_snap_env_pairs () {
+    env -0 | jq -Rs '
+        split("\u0000")
+        | map(select(length > 0))
+        | map({name: .[:(index("="))], value: .[(index("=") + 1):]})
+        | sort_by(.name)
+    '
+}
+
+# _run_creds_loader PATH
+#
+# Trusted-side credentials loader. SOURCES the given script once, here in
+# the launching shell (where 1Password/op, keychains, SSO helpers etc. are
+# all reachable) - NOT inside the sandboxed agent shell, where none of
+# those can work. Captures the environment delta (vars the loader exports,
+# minus a small noise denylist) in memory and sets globals:
+#   creds_env_names - space-separated exported var NAMES (for the launcher
+#                     clean-env whitelist and the plan report)
+#   creds_env_args  - array of VAR=value strings, passed to
+#                     `tmux new-session -e` so the tmux server (and the
+#                     pane process it spawns) inherits them.
+# Values live in shell/tmux memory only - never written to disk. Empty
+# names/values are impossible (env can't hold them); the denylist keeps
+# PATH/HOME/locale/AITASK_* bookkeeping vars from propagating by accident.
+_run_creds_loader () {
+    local loader="$1"
+    local before after
+    _info "Sourcing creds loader ($loader)..."
+    if ! before="$(_snap_env_pairs)" ; then
+        _die "Couldn't snapshot the environment before the creds loader ran."
+    fi
+    # The loader is trusted input (same model as --prompt-file): sourced in
+    # the user's own shell context, with set -u temporarily off so a loader
+    # written for plain `sh -c` semantics can't abort the whole run on an
+    # unset variable.
+    local flag_u=off
+    [ "${-#*u}" != "$-" ] && flag_u=on
+    set +u
+    # In an if-condition so set -e stays suppressed and a failing loader
+    # (bad syntax, `op` locked/expired, ...) dies with our message, not
+    # bash's.
+    # shellcheck disable=SC1090  # loader path is a runtime option by design
+    if ! . "$loader" ; then
+        _die "Creds loader '$loader' failed (see its error output above) - not starting."
+    fi
+    [ "$flag_u" = on ] && set -u
+    if ! after="$(_snap_env_pairs)" ; then
+        _die "Couldn't snapshot the environment after the creds loader ran."
+    fi
+    creds_env_names="$(printf '%s\n%s' "$before" "$after" | jq -rs '
+        (.[0] | map({key: .name, value: .value}) | from_entries) as $b
+        | .[1]
+        | [.[] | select(($b[.name] // "\u0001<unset>") != .value)]
+        | map(.name | select(
+            . != "PATH" and . != "HOME" and . != "SHELL" and . != "USER"
+            and . != "LOGNAME" and . != "TMPDIR" and . != "_" and . != "__CFBundleIdentifier"
+            and (. | startswith("LC_") | not) and (. != "LANG")
+            and (. | startswith("AITASK_") | not)
+        ))
+        | sort
+        | join(" ")
+    ')"
+    creds_env_args=()
+    local name
+    for name in $creds_env_names ; do
+        creds_env_args+=("$name=$(eval "printf '%s' \"\${$name}\"")")
+    done
+    if [ "${#creds_env_args[@]}" -gt 0 ] ; then
+        _info "Creds loader exported: $creds_env_names"
+    else
+        _info "Creds loader exported nothing new."
+    fi
+}
+
 # Sets globals: lower_id, worktree_dir, session.
 _compute_paths () {
     lower_id="$(printf '%s' "$identifier" | tr '[:upper:]' '[:lower:]')"
@@ -734,7 +834,11 @@ _report_plan () {
     _info "Agent:     $agent_type"
     _info "Model:     ${model:-<agent default>}"
     _info "AWS ReadOnly role: ${aws_role_readonly:-<off>}"
-    _info "Creds loader: ${creds_loader:-<none>}"
+    if [ -n "$creds_loader" ] ; then
+        _info "Creds loader: $creds_loader${creds_env_names:+ (exports: $creds_env_names)}"
+    else
+        _info "Creds loader: <none>"
+    fi
 }
 
 # _is_registered_worktree DIR -> true iff DIR is a worktree (linked or
@@ -854,6 +958,7 @@ _setup_aws_readonly () {
 # Sets globals: hosts, hosts_json, cred_files, cred_files_json, deny_read_json.
 _build_sandbox_allowlists () {
     hosts=(github.com api.github.com raw.githubusercontent.com linear.app api.linear.app)
+    hosts+=("*.datadoghq.com" "*.datadoghq.eu")
     [ -z "$aws_role_readonly" ] || hosts+=("*.amazonaws.com" "169.254.169.254" "169.254.170.2")
     if [ -n "$allowed_hosts_extra" ] ; then
         local extra_hosts
@@ -1049,19 +1154,34 @@ _write_launcher () {
         # leaving the pane as a bare interactive shell that never launches
         # the agent. With -c the command survives in $BASH_EXECUTION_STRING,
         # which such profiles do preserve.
-        cat <<'EOLAUNCHER'
-if [ "${AITASK_CLEAN_ENV:-}" != "1" ] ; then
-    agent_user="${USER:-$(id -un)}"
-    clean_env=(env -i HOME="$HOME" AITASK_CLEAN_ENV=1 "AITASK_LAUNCHER=$0" "TERM=${TERM:-xterm-256color}" "USER=$agent_user" "LOGNAME=${LOGNAME:-$agent_user}")
-    [ -z "${LANG:-}" ] || clean_env+=("LANG=$LANG")
-    [ -z "${LC_ALL:-}" ] || clean_env+=("LC_ALL=$LC_ALL")
-    exec "${clean_env[@]}" bash -l -c 'exec "$AITASK_LAUNCHER"'
+        cat <<EOLAUNCHER
+if [ "\${AITASK_CLEAN_ENV:-}" != "1" ] ; then
+    agent_user="\${USER:-\$(id -un)}"
+    clean_env=(env -i HOME="\$HOME" AITASK_CLEAN_ENV=1 "AITASK_LAUNCHER=\$0" "TERM=\${TERM:-xterm-256color}" "USER=\$agent_user" "LOGNAME=\${LOGNAME:-\$agent_user}")
+    [ -z "\${LANG:-}" ] || clean_env+=("LANG=\$LANG")
+    [ -z "\${LC_ALL:-}" ] || clean_env+=("LC_ALL=\$LC_ALL")
+EOLAUNCHER
+        # Credentials loaded on the trusted side (see _run_creds_loader) ride
+        # through the env -i stage by NAME: each var is re-added explicitly
+        # from the tmux-inherited environment, so the pristine shell keeps
+        # them without anything being written to disk. Values are already in
+        # this shell's environment (tmux -e put them there); they are never
+        # re-printed by the launcher.
+        local vname
+        # shellcheck disable=SC2016  # the emitted line must expand $VAR at launcher runtime, not now
+        for vname in $creds_env_names ; do
+            printf '[ -n "${%s+x}" ] && clean_env+=("%s=$%s")\n' "$vname" "$vname" "$vname"
+        done
+        cat <<EOLAUNCHER
+    exec "\${clean_env[@]}" bash -l -c 'exec "\$AITASK_LAUNCHER"'
 fi
 EOLAUNCHER
         printf 'cd %q\n' "$worktree_dir"
-        # Loader runs before ai-task's own exports below, so the sandbox's AWS
-        # config pinning / OPENCODE_* vars always have the final say.
-        [ -z "$creds_loader" ] || printf '. %q\n' "$creds_loader"
+        # Creds loader now runs on the trusted side at start time (see
+        # _run_creds_loader); the sandboxed shell receives the exported vars
+        # via tmux's environment instead of sourcing anything here. AWS
+        # ReadOnly mode's env exports are applied after, so they take
+        # precedence.
         if [ -n "$aws_role_readonly" ] ; then
             printf 'unset AWS_PROFILE\n'
             printf 'export AWS_CONFIG_FILE=%q\n' "$aws_dir/config"
@@ -1099,7 +1219,19 @@ _mark_in_progress () {
 
 _launch_tmux () {
     _info "Starting tmux session '$session'..."
-    tmux new-session -d -s "$session" -c "$worktree_dir" "$launcher_file"
+    # Trusted-side creds loader vars (see _run_creds_loader) are injected
+    # into the tmux SERVER's global environment via -e: the pane process
+    # (the launcher, and through it the agent) inherits them without any
+    # secrets touching disk. Values sit in tmux process memory only.
+    if [ "${#creds_env_args[@]}" -gt 0 ] ; then
+        local -a e_args=() kv
+        for kv in "${creds_env_args[@]}" ; do
+            e_args+=(-e "$kv")
+        done
+        tmux new-session -d -s "$session" "${e_args[@]}" -c "$worktree_dir" "$launcher_file"
+    else
+        tmux new-session -d -s "$session" -c "$worktree_dir" "$launcher_file"
+    fi
 }
 
 # Opt-in: register the just-created worktree + AI session as a Termic task.
@@ -1134,6 +1266,19 @@ cmd_start () {
     [ -n "$worktree_root" ] || worktree_root="$HOME/.local/ai-task/worktrees/$REPO_NAME"
 
     _compute_paths
+    # Auto-default: ~/.config/ai-task/creds.sh is used when it exists and
+    # nothing more explicit (CLI flag / AITASK_CREDS_LOADER / config) was
+    # given. An explicitly empty value stays "off".
+    if [ -z "$creds_loader" ] && [ -f "$HOME/.config/ai-task/creds.sh" ] ; then
+        creds_loader="$HOME/.config/ai-task/creds.sh"
+        _info "Using default creds loader: $creds_loader"
+    fi
+    # Trusted-side loader execution must happen BEFORE the worktree exists
+    # (and before Linear state is touched): if the loader fails - e.g.
+    # 1Password is locked - we abort cleanly with nothing created. Skipped
+    # on dry runs, which must never execute user scripts (nor trigger a
+    # 1Password auth prompt).
+    [ "$dry_run" = "1" ] || [ -z "$creds_loader" ] || _run_creds_loader "$creds_loader"
     _report_plan
 
     if [ "$dry_run" = "1" ] ; then
@@ -1144,6 +1289,9 @@ cmd_start () {
             recreate-from-branch) action_desc="recreate the worktree from the existing branch '$branch' (no reset)" ;;
             *)                    action_desc="create worktree" ;;
         esac
+        if [ -n "$creds_loader" ] ; then
+            _info "(dry run) Would source creds loader $creds_loader (trusted side, at start time - NOT executed during this dry run) and inject its exported vars into the tmux session."
+        fi
         _info "(dry run) Would $action_desc, mark $identifier as '$in_progress_state', and start tmux session '$session'."
         return 0
     fi
@@ -1352,10 +1500,10 @@ _ensure_team_configured () {
     # default location.
     local target_conf c
     target_conf=""
-    for c in "$(pwd)/.ai-taskrc" "$(pwd)/ai-task.conf" "$HOME/.ai-taskrc" "$HOME/.config/ai-task/ai-task.conf" ; do
+    for c in "$(pwd)/.ai-taskrc" "$(pwd)/ai-task.conf" "$HOME/.ai-taskrc" "$HOME/.config/ai-task/.ai-taskrc" "$HOME/.config/ai-task/ai-task.conf" ; do
         [ ! -e "$c" ] || { target_conf="$c"; break; }
     done
-    [ -n "$target_conf" ] || target_conf="$HOME/.ai-taskrc"
+    [ -n "$target_conf" ] || target_conf="$HOME/.config/ai-task/ai-task.conf"
     mkdir -p "$(dirname "$target_conf")"
     printf '\nAITASK_TEAM=%q\n' "$team" >> "$target_conf"
     _info "Saved AITASK_TEAM=$team to $target_conf"
@@ -1577,6 +1725,7 @@ main () {
     # style), checked at both the home and project-local scope. Later files
     # win if more than one exists.
     _loadconf "$HOME/.config/ai-task/ai-task.conf"
+    _loadconf "$HOME/.config/ai-task/.ai-taskrc"
     _loadconf "$HOME/.ai-taskrc"
     _loadconf "$(pwd)/ai-task.conf"
     _loadconf "$(pwd)/.ai-taskrc"
