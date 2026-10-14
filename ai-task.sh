@@ -7,7 +7,11 @@
 # optionally pre-authenticates read-only AWS credentials (AWS ReadOnly
 # mode - opt-in via --aws-readonly-role ROLE / AITASK_AWS_ROLE_READONLY, or
 # `aws-preauth` command), and launches an autonomous AI session in tmux -
-# `claude` (default) or `opencode` (--agent-type opencode). The agent runs
+# `claude` (default) or `opencode` (--agent-type opencode). Claude now runs
+# headless (`claude -p --permission-mode bypassPermissions`) by default, so it cannot
+# hang on an unseen AskUserQuestion prompt; use `--interactive` to get the
+# old attachable tmux session. `resume` continues a blocked ticket, and
+# `watch` polls Linear and auto-resumes on human replies. The agent runs
 # in a pristine login shell (env -i, HOME/TERM/LANG only) so nothing from
 # your interactive terminal - exported credentials included - leaks in.
 # Credentials are injected via --creds-loader / AITASK_CREDS_LOADER: a
@@ -85,9 +89,17 @@ Commands:
                          many issues; only errors if the Linear query
                          itself fails (e.g. bad team, not authenticated).
   start TICKET-ID        Create a worktree + tmux session for the given
-                         Linear issue (e.g. \`$SCRIPT start DVOPS-1234\`).
-                         Pass --first instead of a ticket id to pick the
-                         top match from the same filters \`list\` uses.
+                          Linear issue (e.g. \`$SCRIPT start DVOPS-1234\`).
+                          Pass --first instead of a ticket id to pick the
+                          top match from the same filters \`list\` uses.
+                          Claude runs headless (\`claude -p --permission-mode bypassPermissions\`) by default;
+                          use --interactive for the old tmux attach mode.
+  resume TICKET-ID        Resume a previously started ticket. Reads the
+                          latest blocked marker comment and any newer human
+                          replies from Linear, then launches a headless
+                          continuation in the existing worktree.
+  watch TICKET-ID         Poll a blocked ticket's Linear comments and
+                          automatically \`resume\` when a human replies.
   aws-preauth OUTDIR ROLE  Mint read-only AWS credentials for every account
                           with a ':ROLE' profile into OUTDIR. Used
                           internally by AWS ReadOnly mode (opt-in -
@@ -245,6 +257,13 @@ has an AITASK_<NAME> env var equivalent):
                               {{TITLE}}, {{URL}}, {{DESCRIPTION}},
                               {{BLOCKED_STATE}} placeholders)
   --prompt-extra TEXT         Extra text appended to the prompt
+  --interactive               Claude only: launch an interactive tmux
+                              session (old behavior). Default is headless
+                               \`claude -p --permission-mode bypassPermissions\`.
+  --watch                     After the headless run finishes, if the
+                              ticket is blocked start a watcher that
+                              auto-resumes on Linear replies.
+  --watch-interval SECONDS    Polling interval for \`watch\` (default: 300).
   -n, --dry-run                Show what would happen; don't touch git,
                               Linear, or tmux
 
@@ -256,7 +275,8 @@ AITASK_REPO, AITASK_REPO_LABEL_PREFIX, AITASK_REPO_MISSING,
 AITASK_WORKTREE_ROOT, AITASK_REUSE_WORKTREE, AITASK_IN_PROGRESS_STATE, AITASK_BLOCKED_STATE,
 AITASK_AGENT_TYPE, AITASK_PERMISSION_MODE, AITASK_MODEL, AITASK_AGENT_SETTINGS,
 AITASK_AWS_ROLE_READONLY, AITASK_CREDS_LOADER, AITASK_ALLOWED_HOSTS, AITASK_TERMIC,
-AITASK_PROMPT_FILE, AITASK_PROMPT_EXTRA.
+AITASK_PROMPT_FILE, AITASK_PROMPT_EXTRA,
+AITASK_INTERACTIVE, AITASK_WATCH, AITASK_WATCH_INTERVAL.
 
 AITASK_TEAM falls back to linear-cli's own LINEAR_TEAM_ID; AITASK_SORT
 falls back to LINEAR_ISSUE_SORT (see linear-cli's own configuration docs).
@@ -554,7 +574,8 @@ _AITASK_VARS="AITASK_TEAM AITASK_LABEL AITASK_ASSIGNEE AITASK_NO_ASSIGNEE AITASK
 AITASK_SORT AITASK_PRIORITY AITASK_REPO AITASK_REPO_LABEL_PREFIX AITASK_REPO_MISSING
 AITASK_WORKTREE_ROOT AITASK_IN_PROGRESS_STATE AITASK_BLOCKED_STATE
 AITASK_AGENT_TYPE AITASK_PERMISSION_MODE AITASK_MODEL AITASK_AGENT_SETTINGS AITASK_AWS_ROLE_READONLY
-AITASK_CREDS_LOADER AITASK_ALLOWED_HOSTS AITASK_TERMIC AITASK_PROMPT_FILE AITASK_PROMPT_EXTRA"
+AITASK_CREDS_LOADER AITASK_ALLOWED_HOSTS AITASK_TERMIC AITASK_PROMPT_FILE AITASK_PROMPT_EXTRA
+AITASK_INTERACTIVE AITASK_WATCH AITASK_WATCH_INTERVAL"
 
 # Pre-declare the repo-dir map as a global associative array so config
 # files can assign entries directly (AITASK_REPO_DIRS[junkdrawer]=...).
@@ -817,6 +838,17 @@ _run_creds_loader () {
     fi
 }
 
+# _absolutize_worktree_root
+#
+# Makes $worktree_root absolute if it is set and relative, so generated
+# launchers and watch/resume commands work regardless of the caller's cwd.
+_absolutize_worktree_root () {
+    case "${worktree_root:-}" in
+        ""|/*) ;;
+        *) worktree_root="$(pwd)/$worktree_root" ;;
+    esac
+}
+
 # Sets globals: lower_id, worktree_dir, session.
 _compute_paths () {
     lower_id="$(printf '%s' "$identifier" | tr '[:upper:]' '[:lower:]')"
@@ -1021,7 +1053,14 @@ _write_opencode_sandbox_config () {
     opencode_config_file="$worktree_dir/.aitask-opencode-config.json"
     local base_config="{}"
     [ -z "$agent_settings" ] || base_config="$(cat "$agent_settings")"
-    printf '%s' "$base_config" | jq '.plugin = ((.plugin // []) + ["opencode-sandbox"] | unique)' > "$opencode_config_file"
+    printf '%s' "$base_config" | jq '
+      .plugin = ((.plugin // []) + ["opencode-sandbox"] | unique)
+      | .permission = ((.permission // {}) + {
+          "question": "deny",
+          "doom_loop": "allow",
+          "external_directory": "allow"
+        })
+    ' > "$opencode_config_file"
 }
 
 _write_sandbox_config () {
@@ -1067,6 +1106,14 @@ changes. If the ticket itself is ambiguous about what's wanted, say so in
 a Linear comment (see below) and use your best judgment rather than
 stalling.
 
+CRITICAL: this session is headless. You cannot ask the user questions and
+you must not use any AskUserQuestion, question, or interactive-prompt tool.
+If you need a decision or clarification, post a Linear comment that starts
+with the marker \`<!-- ai-task: blocked -->\`, explain the options and what
+you need, move the ticket to "$blocked_state"
+(\`linear issue update $identifier --state "$blocked_state"\`), commit any
+progress, and stop. Do not wait for a reply.
+
 Post a Linear comment (\`linear issue comment add $identifier -b "..."\`)
 at each of these milestones:
 
@@ -1074,9 +1121,9 @@ at each of these milestones:
 2. If you hit something this session genuinely can't do because of its
    restricted scope or permissions: keep working on everything else you
    can first, note the gap clearly in the PR description (step 3), then
-   comment explaining exactly what's needed, move the ticket to
-   "$blocked_state" (\`linear issue update $identifier --state "$blocked_state"\`),
-   and stop.
+   comment starting with \`<!-- ai-task: blocked -->\` explaining exactly
+   what's needed, move the ticket to "$blocked_state"
+   (\`linear issue update $identifier --state "$blocked_state"\`), and stop.
 3. When finished (fully, or as far as this session could get): commit
    your work and open a PR with \`gh pr create\` referencing this ticket
    with "ref $identifier" in the PR body (not a closing keyword like
@@ -1188,12 +1235,70 @@ EOLAUNCHER
             printf 'export AWS_SHARED_CREDENTIALS_FILE=%q\n' "$aws_dir/credentials"
         fi
         if [ "$agent_type" = "claude" ] ; then
-            printf 'exec claude'
-            printf ' --permission-mode %q' "$permission_mode"
-            [ -z "$model" ] || printf ' --model %q' "$model"
-            [ -z "$agent_settings" ] || printf ' --settings %q' "$agent_settings"
-            # shellcheck disable=SC2016  # "$(cat ...)" must expand when the agent runs, not now
-            printf ' "$(cat %q)"\n' "$prompt_file_out"
+            if [ "$interactive" = "true" ] ; then
+                # Legacy interactive mode: keep the original tmux attach experience.
+                # This still exposes AskUserQuestion, so it is only suitable when
+                # someone will actually watch the session.
+                printf 'exec claude'
+                printf ' --permission-mode %q' "$permission_mode"
+                [ -z "$model" ] || printf ' --model %q' "$model"
+                [ -z "$agent_settings" ] || printf ' --settings %q' "$agent_settings"
+                # shellcheck disable=SC2016  # "$(cat ...)" must expand when the agent runs, not now
+                printf ' "$(cat %q)"\n' "$prompt_file_out"
+            else
+                # Headless mode: run claude -p to completion, capture the result
+                # and session id, then keep the tmux pane alive on the log so
+                # `tmux attach` still shows what happened.
+                local claude_args
+                claude_args="-p --permission-mode bypassPermissions --output-format json"
+                [ -z "$model" ] || claude_args="$claude_args --model $(printf '%q' "$model")"
+                [ -z "$agent_settings" ] || claude_args="$claude_args --settings $(printf '%q' "$agent_settings")"
+                cat <<EOHEADLESS
+prompt_file=".aitask-prompt.txt"
+resume_file=".aitask-resume-prompt.txt"
+session_file=".aitask-session-id"
+result_file=".aitask-result.json"
+log_file=".aitask.log"
+status_file=".aitask-status.json"
+
+if [ -s "\$resume_file" ] ; then
+    current_prompt_file="\$resume_file"
+else
+    current_prompt_file="\$prompt_file"
+fi
+
+resume_arg=""
+if [ -s "\$session_file" ] ; then
+    resume_arg="--resume \$(cat "\$session_file")"
+fi
+
+printf '\n=== ai-task run started at %s ===\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$log_file"
+
+set +e
+claude $claude_args \$resume_arg "\$(cat "\$current_prompt_file")" > "\$result_file" 2>> "\$log_file"
+run_status=\$?
+set -e
+
+if [ -s "\$result_file" ] ; then
+    jq -r '.session_id // empty' "\$result_file" > "\$session_file.tmp"
+    [ -s "\$session_file.tmp" ] && mv "\$session_file.tmp" "\$session_file"
+    printf '\n=== ai-task result ===\n' >> "\$log_file"
+    jq -r '.result // empty' "\$result_file" >> "\$log_file"
+fi
+printf '\n=== ai-task run finished (exit %s) at %s ===\n' "\$run_status" "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$log_file"
+jq -n --arg status "\$run_status" --arg result_file "\$result_file" '{status: \$status, result_file: \$result_file, finishedAt: now}' > "\$status_file"
+
+# If --watch was requested and the ticket is blocked, start the watcher.
+if [ "\${AITASK_WATCH:-0}" = "1" ] && [ -n "\${AITASK_BIN:-}" ] ; then
+    issue_state=\$(linear issue view "$identifier" --json 2>/dev/null | jq -r '.state.name // empty' || true)
+    if [ "\$issue_state" = "$blocked_state" ] ; then
+        tmux new-session -d -s "aitask-watch-$lower_id" -c "\$PWD" "\$AITASK_BIN" watch "$identifier"
+    fi
+fi
+
+# Headless run is done; logs remain in the worktree.
+EOHEADLESS
+            fi
         else
             # --auto bypasses any opencode permission prompt not explicitly
             # denied - opencode's own docs call this "dangerous". There's no
@@ -1223,15 +1328,28 @@ _launch_tmux () {
     # into the tmux SERVER's global environment via -e: the pane process
     # (the launcher, and through it the agent) inherits them without any
     # secrets touching disk. Values sit in tmux process memory only.
-    if [ "${#creds_env_args[@]}" -gt 0 ] ; then
-        local -a e_args=() kv
-        for kv in "${creds_env_args[@]}" ; do
-            e_args+=(-e "$kv")
-        done
-        tmux new-session -d -s "$session" "${e_args[@]}" -c "$worktree_dir" "$launcher_file"
-    else
-        tmux new-session -d -s "$session" -c "$worktree_dir" "$launcher_file"
-    fi
+    local -a e_args=() kv
+    local aitask_bin
+    aitask_bin="$0"
+    case "$aitask_bin" in
+        /*) ;;
+        *)
+            if command -v "$aitask_bin" >/dev/null 2>&1 ; then
+                aitask_bin="$(command -v "$aitask_bin")"
+            else
+                aitask_bin="$(cd "$(dirname "$aitask_bin")" && pwd)/$(basename "$aitask_bin")"
+            fi
+            ;;
+    esac
+    e_args+=(-e "AITASK_WATCH=$([ "$watch" = "true" ] && echo 1 || echo 0)")
+    e_args+=(-e "AITASK_BIN=$aitask_bin")
+    e_args+=(-e "AITASK_IDENTIFIER=$identifier")
+    e_args+=(-e "AITASK_BLOCKED_STATE=$blocked_state")
+    e_args+=(-e "AITASK_LOWER_ID=$lower_id")
+    for kv in "${creds_env_args[@]}" ; do
+        e_args+=(-e "$kv")
+    done
+    tmux new-session -d -s "$session" "${e_args[@]}" -c "$worktree_dir" "$launcher_file"
 }
 
 # Opt-in: register the just-created worktree + AI session as a Termic task.
@@ -1246,8 +1364,14 @@ _register_termic () {
 }
 
 _finish () {
-    _info "Done. Attach with: tmux attach -t $session"
-    _info "(Whether your terminal/IDE app auto-discovers this tmux session is unverified - attach manually if not. See README.md.)"
+    if [ "$interactive" = "true" ] ; then
+        _info "Done. Attach with: tmux attach -t $session"
+        _info "(Whether your terminal/IDE app auto-discovers this tmux session is unverified - attach manually if not. See README.md.)"
+    else
+        _info "Done. Logs: $worktree_dir/.aitask.log"
+        _info "Result: $worktree_dir/.aitask-result.json"
+        _info "Session: $session (tmux session will exit when the headless run finishes)"
+    fi
 }
 
 cmd_start () {
@@ -1264,6 +1388,7 @@ cmd_start () {
     _resolve_start_repo
     MAIN_BRANCH="$(_detect_main_branch "$ROOTDIR")"
     [ -n "$worktree_root" ] || worktree_root="$HOME/.local/ai-task/worktrees/$REPO_NAME"
+    _absolutize_worktree_root
 
     _compute_paths
     # Auto-default: ~/.config/ai-task/creds.sh is used when it exists and
@@ -1315,6 +1440,193 @@ cmd_start () {
     _finish
 }
 
+# ── resume command ───────────────────────────────────────────────────────────
+
+# _find_worktree_dir_for_ticket TICKET
+#
+# Resolves worktree_dir for `resume`/`watch`. First, if the current directory
+# looks like an ai-task worktree, uses it. Otherwise resolves the repo and
+# worktree_root the same way `start` does.
+_find_worktree_dir_for_ticket () {
+    local ticket="$1"
+    lower_id="$(printf '%s' "$ticket" | tr '[:upper:]' '[:lower:]')"
+    if [ -f "$(pwd)/.aitask-prompt.txt" ] || [ -f "$(pwd)/.aitask-session-id" ] ; then
+        worktree_dir="$(pwd)"
+        return 0
+    fi
+    if git rev-parse --show-toplevel >/dev/null 2>&1 ; then
+        ROOTDIR="$(git rev-parse --show-toplevel)"
+        REPO_NAME="$(basename -s .git "$(git -C "$ROOTDIR" remote get-url origin)")" \
+            || _die "Couldn't read the 'origin' remote of $ROOTDIR."
+    else
+        [ -n "$worktree_root" ] || _die "Cannot locate worktree for $ticket: not inside a git repo and --worktree-root not set."
+    fi
+    [ -n "$worktree_root" ] || worktree_root="$HOME/.local/ai-task/worktrees/$REPO_NAME"
+    _absolutize_worktree_root
+    worktree_dir="$worktree_root/$lower_id"
+    [ -d "$worktree_dir" ] || _die "No worktree found for $ticket at $worktree_dir."
+}
+
+# _build_resume_prompt TICKET
+#
+# Sets global resume_prompt by reading the issue, finding the latest
+# <!-- ai-task: blocked --> comment, and collecting any newer human replies.
+_build_resume_prompt () {
+    local ticket="$1" issue_json comments_json blocked_marker
+    local blocked_id blocked_time replies_json reply_count reply_bodies
+    blocked_marker="<!-- ai-task: blocked -->"
+
+    issue_json="$(linear issue view "$ticket" --json)" \
+        || _die "Could not fetch issue '$ticket' from Linear."
+    identifier="$(printf '%s' "$issue_json" | jq -r '.identifier')"
+    title="$(printf '%s' "$issue_json" | jq -r '.title')"
+    url="$(printf '%s' "$issue_json" | jq -r '.url')"
+
+    comments_json="$(linear issue comment list "$ticket" --json)" \
+        || _die "Could not fetch comments for '$ticket'."
+
+    blocked_id="$(printf '%s' "$comments_json" | jq -r --arg marker "$blocked_marker" '
+        (if type == "object" and has("nodes") then .nodes else . end)
+        | [ .[] | select((.body // "") | contains($marker)) ]
+        | sort_by(.createdAt) | last | .id // empty
+    ')"
+    [ -n "$blocked_id" ] || _die "No blocked marker comment found on $ticket - cannot resume."
+
+    blocked_time="$(printf '%s' "$comments_json" | jq -r --arg id "$blocked_id" '
+        (if type == "object" and has("nodes") then .nodes else . end)
+        | [ .[] | select(.id == $id) ] | first | .createdAt // empty
+    ')"
+
+    replies_json="$(printf '%s' "$comments_json" | jq -r --arg marker "$blocked_marker" --arg t "$blocked_time" '
+        (if type == "object" and has("nodes") then .nodes else . end)
+        | [ .[] | select(((.body // "") | contains($marker) | not) and .createdAt > $t) ]
+        | sort_by(.createdAt)
+    ')"
+    reply_count="$(printf '%s' "$replies_json" | jq 'length')"
+    [ "$reply_count" -gt 0 ] || _die "No new replies after the blocked marker on $ticket - nothing to resume."
+
+    reply_bodies="$(printf '%s' "$replies_json" | jq -r '.[] | "\n--- Reply (\(.createdAt)) ---\n\(.body)"')"
+
+    read -r -d '' resume_prompt <<EOP || true
+Continuing work on Linear issue $identifier: $title
+
+$url
+
+The user replied via Linear:
+$reply_bodies
+
+Please continue. If you are still blocked, post a Linear comment starting with \`$blocked_marker\`, move the ticket to "$blocked_state", commit any progress, and stop.
+EOP
+}
+
+cmd_resume () {
+    [ -n "$ticket_id" ] || _die "Usage: $SCRIPT resume <TICKET-ID> [OPTIONS]"
+    _info "Resuming $ticket_id..."
+    _build_resume_prompt "$ticket_id"
+    _find_worktree_dir_for_ticket "$ticket_id"
+    printf '%s' "$resume_prompt" > "$worktree_dir/.aitask-resume-prompt.txt"
+    # Re-run start in headless reuse mode. It will pick up the resume prompt
+    # and the saved session id in the launcher. Keep the user's --watch
+    # preference so a resumed run can spawn its own watcher if it gets stuck
+    # again.
+    reuse_worktree="true"
+    interactive="false"
+    cmd_start
+}
+
+# ── watch command ────────────────────────────────────────────────────────────
+
+# Polls Linear for human replies to a blocked ai-task marker and resumes work.
+cmd_watch () {
+    [ -n "$ticket_id" ] || _die "Usage: $SCRIPT watch <TICKET-ID> [OPTIONS]"
+    local blocked_marker="<!-- ai-task: blocked -->"
+    local issue_json state comments_json blocked_id blocked_time
+    local replies_json reply_count reply_bodies
+    local aitask_bin
+
+    aitask_bin="$0"
+    case "$aitask_bin" in
+        /*) ;;
+        *)
+            if command -v "$aitask_bin" >/dev/null 2>&1 ; then
+                aitask_bin="$(command -v "$aitask_bin")"
+            else
+                aitask_bin="$(cd "$(dirname "$aitask_bin")" && pwd)/$(basename "$aitask_bin")"
+            fi
+            ;;
+    esac
+
+    _find_worktree_dir_for_ticket "$ticket_id"
+    _info "Watching $ticket_id for replies (interval ${watch_interval}s; worktree $worktree_dir). Press Ctrl-C to stop."
+
+    local last_resumed_blocked_id=""
+    while true ; do
+        issue_json="$(linear issue view "$ticket_id" --json)" || {
+            _err "Failed to fetch issue $ticket_id; retrying in ${watch_interval}s..."
+            sleep "$watch_interval"
+            continue
+        }
+        state="$(printf '%s' "$issue_json" | jq -r '.state.name // empty')"
+        if [ "$state" != "$blocked_state" ] ; then
+            _info "Issue $ticket_id is no longer in '$blocked_state' (state: '$state'). Exiting watch loop."
+            return 0
+        fi
+
+        comments_json="$(linear issue comment list "$ticket_id" --json)" || {
+            _err "Failed to fetch comments for $ticket_id; retrying in ${watch_interval}s..."
+            sleep "$watch_interval"
+            continue
+        }
+
+        blocked_id="$(printf '%s' "$comments_json" | jq -r --arg marker "$blocked_marker" '
+            (if type == "object" and has("nodes") then .nodes else . end)
+            | [ .[] | select((.body // "") | contains($marker)) ]
+            | sort_by(.createdAt) | last | .id // empty
+        ')"
+        if [ -z "$blocked_id" ] ; then
+            _info "No blocked marker comment found yet. Waiting ${watch_interval}s..."
+            sleep "$watch_interval"
+            continue
+        fi
+        if [ "$blocked_id" = "$last_resumed_blocked_id" ] ; then
+            # Already resumed for this marker; wait for a new one or a state change.
+            sleep "$watch_interval"
+            continue
+        fi
+
+        blocked_time="$(printf '%s' "$comments_json" | jq -r --arg id "$blocked_id" '
+            (if type == "object" and has("nodes") then .nodes else . end)
+            | [ .[] | select(.id == $id) ] | first | .createdAt // empty
+        ')"
+
+        replies_json="$(printf '%s' "$comments_json" | jq -r --arg marker "$blocked_marker" --arg t "$blocked_time" '
+            (if type == "object" and has("nodes") then .nodes else . end)
+            | [ .[] | select(((.body // "") | contains($marker) | not) and .createdAt > $t) ]
+            | sort_by(.createdAt)
+        ')"
+        reply_count="$(printf '%s' "$replies_json" | jq 'length')"
+        if [ "$reply_count" -gt 0 ] ; then
+            _info "New reply(s) detected on $ticket_id. Resuming..."
+            reply_bodies="$(printf '%s' "$replies_json" | jq -r '.[] | "\n--- Reply (\(.createdAt)) ---\n\(.body)"')"
+            {
+                printf 'Continuing work on Linear issue %s.\n\n' "$ticket_id"
+                printf 'The user replied via Linear:%s\n\n' "$reply_bodies"
+                printf 'Please continue. If you are still blocked, post a Linear comment starting with `%s`, move the ticket to "%s", commit any progress, and stop.\n' "$blocked_marker" "$blocked_state"
+            } > "$worktree_dir/.aitask-resume-prompt.txt"
+            # Kill any stale headless session so resume can reuse the name.
+            tmux kill-session -t "aitask-$(printf '%s' "$ticket_id" | tr '[:upper:]' '[:lower:]')" 2>/dev/null || true
+            # Stop the old watcher and the stale headless session before
+            # resuming, then ask the resume run to keep watching.
+            tmux kill-session -t "aitask-watch-$lower_id" 2>/dev/null || true
+            tmux kill-session -t "aitask-$lower_id" 2>/dev/null || true
+            tmux new-session -d -s "aitask-$lower_id" -c "$worktree_dir" "$aitask_bin" resume "$ticket_id" --watch
+            last_resumed_blocked_id="$blocked_id"
+        fi
+
+        sleep "$watch_interval"
+    done
+}
+
 # ── Shared option / config plumbing ──────────────────────────────────────────
 
 # Consumes the remaining args (after the subcommand) into cli_* globals.
@@ -1323,7 +1635,7 @@ _parse_options () {
     cli_team="" cli_label="" cli_assignee="" cli_no_assignee="" cli_state="" cli_cycle="" cli_no_cycle="" cli_sort=""
     cli_priority="" cli_repo="" cli_repo_label_prefix="" cli_repo_missing="" cli_worktree_root="" cli_in_progress_state="" cli_blocked_state=""
     cli_agent_type="" cli_permission_mode="" cli_model="" cli_agent_settings="" cli_aws_readonly="" cli_allowed_hosts="" cli_termic="" cli_prompt_file=""
-    cli_prompt_extra="" cli_creds_loader="" cli_reuse_worktree="" dry_run=0 first=0
+    cli_prompt_extra="" cli_creds_loader="" cli_reuse_worktree="" cli_interactive="" cli_watch="" cli_watch_interval="" dry_run=0 first=0
     # Ticket id (for `start`) is collected as a bare positional argument
     # here, so --first can be recognized no matter where it appears
     # relative to it.
@@ -1357,14 +1669,20 @@ _parse_options () {
             --termic)              shift; _require_value --termic "$#"; cli_termic="$1" ;;
             --prompt-file)         shift; _require_value --prompt-file "$#"; cli_prompt_file="$1" ;;
             --prompt-extra)        shift; _require_value --prompt-extra "$#"; cli_prompt_extra="$1" ;;
+            --interactive)         cli_interactive="true" ;;
+            --watch)               cli_watch="true" ;;
+            --watch-interval)      shift; _require_value --watch-interval "$#"; cli_watch_interval="$1" ;;
             --first)               first=1 ;;
             --reuse-worktree)      cli_reuse_worktree="true" ;;
             -n|--dry-run)          dry_run=1 ;;
             -h|--help)             _usage; exit 0 ;;
             -*)                    _err "Unknown argument: $1"; _usage_error ;;
             *)
-                # Bare positional - only meaningful as a ticket id for `start`.
-                [ "$cmd" = "start" ] || { _err "Unexpected argument: $1 ('$cmd' doesn't take a ticket id)"; _usage_error; }
+                # Bare positional - meaningful as a ticket id for `start`, `resume`, and `watch`.
+                case "$cmd" in
+                    start|resume|watch) ;;
+                    *) _err "Unexpected argument: $1 ('$cmd' doesn't take a ticket id)"; _usage_error ;;
+                esac
                 [ -z "$ticket_id" ] || { _err "Multiple ticket ids given: '$ticket_id' and '$1'"; _usage_error; }
                 ticket_id="$1"
                 ;;
@@ -1409,6 +1727,9 @@ _resolve_options () {
     termic_action="$(_resolve AITASK_TERMIC "$cli_termic" "")"
     prompt_file="$(_resolve AITASK_PROMPT_FILE "$cli_prompt_file" "")"
     prompt_extra="$(_resolve AITASK_PROMPT_EXTRA "$cli_prompt_extra" "")"
+    interactive="$(_resolve AITASK_INTERACTIVE "$cli_interactive" "false")"
+    watch="$(_resolve AITASK_WATCH "$cli_watch" "false")"
+    watch_interval="$(_resolve AITASK_WATCH_INTERVAL "$cli_watch_interval" "300")"
 }
 
 _validate_options () {
@@ -1435,6 +1756,18 @@ _validate_options () {
     if [ "$cmd" = "start" ] ; then
         _require_cmd "$agent_type" "selected via --agent-type"
     fi
+
+    case "$interactive" in
+        true|false) ;;
+        *) _die "Invalid --interactive '$interactive' - must be 'true' or 'false'" ;;
+    esac
+    case "$watch" in
+        true|false) ;;
+        *) _die "Invalid --watch '$watch' - must be 'true' or 'false'" ;;
+    esac
+    case "$watch_interval" in
+        ''|*[!0-9]*) _die "Invalid --watch-interval '$watch_interval' - must be a positive integer (seconds)" ;;
+    esac
 }
 
 # Sets globals: assignee_args, assignee_desc.
@@ -1689,7 +2022,7 @@ main () {
 
     # ── Subcommand dispatch (aws-preauth exits early - no Linear, no git) ──
     case "$cmd" in
-        list|start) ;;
+        list|start|resume|watch) ;;
         aws-preauth)
             [ $# -eq 2 ] || _die "Usage: $SCRIPT aws-preauth <output-dir> <aws-role-name>"
             _cmd_aws_preauth "$1" "$2"
@@ -1710,9 +2043,7 @@ main () {
     # round-trip. cmd/first/dry_run/ticket_id are globals set here.
     _parse_options "$@"
 
-    # list/start both need the linear CLI and a working auth session - a
-    # setup problem is diagnosed clearly here instead of surfacing as a
-    # confusing failure partway through a query later.
+    # list/start/resume/watch all need the linear CLI and a working auth session.
     _require_cmd linear "Install it with: brew install schpet/tap/linear"
     _require_cmd jq
     linear auth whoami >/dev/null 2>&1 \
@@ -1736,11 +2067,12 @@ main () {
     _build_cycle_filter
     _ensure_team_configured
 
-    if [ "$cmd" = "list" ] ; then
-        cmd_list
-    else
-        cmd_start
-    fi
+    case "$cmd" in
+        list)   cmd_list ;;
+        start)  cmd_start ;;
+        resume) cmd_resume ;;
+        watch)  cmd_watch ;;
+    esac
 }
 
 main "$@"
