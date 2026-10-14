@@ -32,6 +32,28 @@
 # AITASK_BLOCKED_STATE="Blocked"
 # AITASK_PERMISSION_MODE="auto"     # claude --permission-mode value (claude only)
 
+# Headless runs use Claude Code's `auto` permission mode by default (a
+# background safety classifier auto-approves safe actions and blocks
+# risky ones). Set AITASK_UNSAFE_BYPASS="true" to skip the classifier
+# and run with `bypassPermissions` instead - off by default, use only
+# when the classifier is unavailable or too restrictive.
+# AITASK_UNSAFE_BYPASS="false"
+
+# Bash-tool allow patterns written into the worktree's
+# .claude/settings.local.json as `permissions.allow`. Evaluated by the
+# safety classifier before it runs, so these commands skip review and
+# execute immediately. REPLACES the built-in defaults entirely (no
+# append), so include the patterns you want plus any extras. Built-in
+# defaults: linear comment/update, gh pr create, git push <user>/*
+# (where <user> is derived from `gh api user`, then `git config
+# github.user`, then $USER - skipped if none can be determined).
+# AITASK_ALLOWED_COMMANDS=(
+#     "Bash(linear issue comment add *)"
+#     "Bash(linear issue update *)"
+#     "Bash(gh pr create *)"
+#     "Bash(git push your-github-username/*)"
+# )
+
 # Which agent CLI to launch: "claude" (default) or "opencode".
 # AITASK_AGENT_TYPE="claude"
 

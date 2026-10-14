@@ -8,7 +8,7 @@
 # mode - opt-in via --aws-readonly-role ROLE / AITASK_AWS_ROLE_READONLY, or
 # `aws-preauth` command), and launches an autonomous AI session in tmux -
 # `claude` (default) or `opencode` (--agent-type opencode). Claude now runs
-# headless (`claude -p --permission-mode bypassPermissions`) by default, so it cannot
+# headless (`claude -p --permission-mode auto`) by default, so it cannot
 # hang on an unseen AskUserQuestion prompt; use `--interactive` to get the
 # old attachable tmux session. `resume` continues a blocked ticket, and
 # `watch` polls Linear and auto-resumes on human replies. The agent runs
@@ -51,7 +51,7 @@ REPO_NAME="<repo>"   # placeholder; resolved by cmd_start (best-effort in _usage
 # _report_plan/_launch_tmux are safe under set -u even when the loader
 # never ran (not configured, or dry run).
 creds_env_names=""
-creds_env_args=()
+creds_env_args=""
 
 _err ()  { printf "%s: Error: %s\n" "$SCRIPT" "$*" 1>&2 ; }
 _info () { printf "%s: Info: %s\n" "$SCRIPT" "$*" 1>&2 ; }
@@ -62,6 +62,31 @@ _require_cmd () {
     local tool="$1" hint="${2:-}"
     command -v "$tool" >/dev/null 2>&1 \
         || _die "Required command '$tool' not found in PATH${hint:+ - $hint}"
+}
+
+# _resolve_github_username
+#
+# Best-effort lookup of the current user's GitHub/Git username for the
+# `Bash(git push <user>/*)` allow pattern. Tries, in order:
+#   1. `gh api user --jq .login`        (authenticated gh CLI)
+#   2. `git config --get github.user`   (git's github.user setting)
+#   3. $USER                             (system username)
+# The result is sanitized to [A-Za-z0-9._-]+ so it can be safely embedded
+# in a Bash allow pattern. Empty stdout means we couldn't determine a
+# safe value - callers should skip the per-user pattern in that case
+# rather than fall back to a wildcard.
+_resolve_github_username () {
+    local u=""
+    if command -v gh >/dev/null 2>&1 ; then
+        u="$(gh api user --jq .login 2>/dev/null || true)"
+    fi
+    if [ -z "$u" ] && command -v git >/dev/null 2>&1 ; then
+        u="$(git config --get github.user 2>/dev/null || true)"
+    fi
+    if [ -z "$u" ] ; then
+        u="${USER:-}"
+    fi
+    printf '%s' "$u" | tr -cd 'A-Za-z0-9._-'
 }
 
 # Print the usage text (exits 0 on -h/--help; error paths go via
@@ -92,7 +117,7 @@ Commands:
                           Linear issue (e.g. \`$SCRIPT start DVOPS-1234\`).
                           Pass --first instead of a ticket id to pick the
                           top match from the same filters \`list\` uses.
-                          Claude runs headless (\`claude -p --permission-mode bypassPermissions\`) by default;
+                          Claude runs headless (\`claude -p --permission-mode auto\`) by default;
                           use --interactive for the old tmux attach mode.
   resume TICKET-ID        Resume a previously started ticket. Reads the
                           latest blocked marker comment and any newer human
@@ -259,7 +284,16 @@ has an AITASK_<NAME> env var equivalent):
   --prompt-extra TEXT         Extra text appended to the prompt
   --interactive               Claude only: launch an interactive tmux
                               session (old behavior). Default is headless
-                               \`claude -p --permission-mode bypassPermissions\`.
+                               \`claude -p --permission-mode auto\`.
+  --unsafe-bypass             Headless only: skip the \`auto\` safety
+                              classifier and run with
+                              \`--permission-mode bypassPermissions\`.
+                              Off by default. Use only when the
+                              classifier is unavailable (older Claude
+                              Code / model) or too restrictive for the
+                              task. The agent can then perform any
+                              action including network writes and
+                              destructive ops.
   --watch                     After the headless run finishes, if the
                               ticket is blocked start a watcher that
                               auto-resumes on Linear replies.
@@ -1014,13 +1048,38 @@ _build_sandbox_allowlists () {
 _write_claude_sandbox_config () {
     _info "Writing sandbox config for the worktree (.claude/settings.local.json)..."
     mkdir -p "$worktree_dir/.claude"
-    jq -n --argjson hosts "$hosts_json" --argjson credfiles "$cred_files_json" '
+    # Pick the effective allow list: user-supplied AITASK_ALLOWED_COMMANDS
+    # replaces the defaults entirely (no append - keep the contract simple).
+    # An empty/unset AITASK_ALLOWED_COMMANDS uses the built-in defaults,
+    # which include a `git push <user>/*` pattern whose `<user>` is derived
+    # from gh / git config / $USER (not hardcoded).
+    local -a cmds
+    if [ ${#allowed_commands[@]} -gt 0 ] ; then
+        cmds=("${allowed_commands[@]}")
+    else
+        cmds=(
+            "Bash(linear issue comment add *)"
+            "Bash(linear issue update *)"
+            "Bash(gh pr create *)"
+        )
+        local gh_user
+        gh_user="$(_resolve_github_username)"
+        if [ -n "$gh_user" ] ; then
+            cmds+=("Bash(git push $gh_user/*)")
+        else
+            _info "Couldn't determine your GitHub username (gh api / git config github.user / \$USER all empty); skipping 'git push <user>/*' from the default allow list. Add it manually via AITASK_ALLOWED_COMMANDS if needed."
+        fi
+    fi
+    local cmds_json
+    cmds_json="$(printf '%s\n' "${cmds[@]}" | jq -R . | jq -s .)"
+    jq -n --argjson hosts "$hosts_json" --argjson credfiles "$cred_files_json" --argjson allow "$cmds_json" '
     {
       sandbox: {
         enabled: true,
         credentials: { files: $credfiles },
         network: { allowedHosts: $hosts }
-      }
+      },
+      permissions: { allow: $allow }
     }' > "$worktree_dir/.claude/settings.local.json"
     # NOTE: the sandbox.* schema above is a best-effort guess grounded in this
     # session's own observed sandbox config, not a confirmed schema from
@@ -1129,6 +1188,16 @@ at each of these milestones:
    with "ref $identifier" in the PR body (not a closing keyword like
    "fixes"). No test-plan checklist, no "Generated with Claude Code"
    line. Then post a final Linear comment with the PR link.
+
+   Note: this session runs with Claude Code's \`auto\` permission mode,
+   which routes tool calls through a safety classifier. The
+   pre-approved allow list (Bash \`gh pr create\`, \`git push <user>/*\`,
+   \`linear ...\`) is evaluated first, so those run without review. If
+   the classifier blocks a \`gh pr create\` or \`git push\` it judges
+   out of scope anyway, commit your work, post a final Linear comment
+   with the proposed PR title/body/branch, and stop - the user will
+   push and open the PR manually. Don't loop trying to retry the
+   blocked command.
 
 Never force-push, never run destructive git operations.
 EOP
@@ -1249,8 +1318,20 @@ EOLAUNCHER
                 # Headless mode: run claude -p to completion, capture the result
                 # and session id, then keep the tmux pane alive on the log so
                 # `tmux attach` still shows what happened.
-                local claude_args
-                claude_args="-p --permission-mode bypassPermissions --output-format json"
+                #
+                # Permission mode: by default `auto` (Claude Code's background
+                # safety classifier - auto-approves safe actions, blocks
+                # risky/external ones). `--unsafe-bypass` opts into
+                # `bypassPermissions` (no checks) for environments where the
+                # classifier is unavailable or too restrictive. A warning is
+                # emitted to stderr and the log when bypass is used.
+                local claude_args perm_mode
+                if [ "$unsafe_bypass" = "true" ] ; then
+                    perm_mode="bypassPermissions"
+                else
+                    perm_mode="auto"
+                fi
+                claude_args="-p --permission-mode $perm_mode --output-format json --append-system-prompt-file \"\$current_prompt_file\""
                 [ -z "$model" ] || claude_args="$claude_args --model $(printf '%q' "$model")"
                 [ -z "$agent_settings" ] || claude_args="$claude_args --settings $(printf '%q' "$agent_settings")"
                 cat <<EOHEADLESS
@@ -1274,8 +1355,14 @@ fi
 
 printf '\n=== ai-task run started at %s ===\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$log_file"
 
+if [ "${AITASK_UNSAFE_BYPASS:-0}" = "1" ] ; then
+    warn='WARNING: --unsafe-bypass is set; running claude with --permission-mode bypassPermissions. No safety checks: the agent can edit any file, run any command, and make any network call. Only use on tickets you trust the agent with completely.'
+    printf '%s\n' "\$warn" >&2
+    printf '\n%s\n' "\$warn" >> "\$log_file"
+fi
+
 set +e
-claude $claude_args \$resume_arg "\$(cat "\$current_prompt_file")" > "\$result_file" 2>> "\$log_file"
+claude $claude_args \$resume_arg "Work on $identifier." > "\$result_file" 2>> "\$log_file"
 run_status=\$?
 set -e
 
@@ -1342,6 +1429,7 @@ _launch_tmux () {
             ;;
     esac
     e_args+=(-e "AITASK_WATCH=$([ "$watch" = "true" ] && echo 1 || echo 0)")
+    e_args+=(-e "AITASK_UNSAFE_BYPASS=$([ "$unsafe_bypass" = "true" ] && echo 1 || echo 0)")
     e_args+=(-e "AITASK_BIN=$aitask_bin")
     e_args+=(-e "AITASK_IDENTIFIER=$identifier")
     e_args+=(-e "AITASK_BLOCKED_STATE=$blocked_state")
@@ -1635,7 +1723,7 @@ _parse_options () {
     cli_team="" cli_label="" cli_assignee="" cli_no_assignee="" cli_state="" cli_cycle="" cli_no_cycle="" cli_sort=""
     cli_priority="" cli_repo="" cli_repo_label_prefix="" cli_repo_missing="" cli_worktree_root="" cli_in_progress_state="" cli_blocked_state=""
     cli_agent_type="" cli_permission_mode="" cli_model="" cli_agent_settings="" cli_aws_readonly="" cli_allowed_hosts="" cli_termic="" cli_prompt_file=""
-    cli_prompt_extra="" cli_creds_loader="" cli_reuse_worktree="" cli_interactive="" cli_watch="" cli_watch_interval="" dry_run=0 first=0
+    cli_prompt_extra="" cli_creds_loader="" cli_reuse_worktree="" cli_interactive="" cli_watch="" cli_watch_interval="" cli_unsafe_bypass="" dry_run=0 first=0
     # Ticket id (for `start`) is collected as a bare positional argument
     # here, so --first can be recognized no matter where it appears
     # relative to it.
@@ -1670,6 +1758,7 @@ _parse_options () {
             --prompt-file)         shift; _require_value --prompt-file "$#"; cli_prompt_file="$1" ;;
             --prompt-extra)        shift; _require_value --prompt-extra "$#"; cli_prompt_extra="$1" ;;
             --interactive)         cli_interactive="true" ;;
+            --unsafe-bypass)       cli_unsafe_bypass="true" ;;
             --watch)               cli_watch="true" ;;
             --watch-interval)      shift; _require_value --watch-interval "$#"; cli_watch_interval="$1" ;;
             --first)               first=1 ;;
@@ -1730,6 +1819,16 @@ _resolve_options () {
     interactive="$(_resolve AITASK_INTERACTIVE "$cli_interactive" "false")"
     watch="$(_resolve AITASK_WATCH "$cli_watch" "false")"
     watch_interval="$(_resolve AITASK_WATCH_INTERVAL "$cli_watch_interval" "300")"
+    unsafe_bypass="$(_resolve AITASK_UNSAFE_BYPASS "$cli_unsafe_bypass" "false")"
+    # AITASK_ALLOWED_COMMANDS is an optional bash array in the config file.
+    # If set (even to a single element), it REPLACES the built-in defaults
+    # in _write_claude_sandbox_config; users can include the defaults
+    # verbatim plus their own additions. The `declare -p` probe is the
+    # only way to tell an array from an unset scalar under set -u.
+    allowed_commands=()
+    if declare -p AITASK_ALLOWED_COMMANDS 2>/dev/null | grep -q '^declare -a' ; then
+        allowed_commands=("${AITASK_ALLOWED_COMMANDS[@]}")
+    fi
 }
 
 _validate_options () {
@@ -1767,6 +1866,10 @@ _validate_options () {
     esac
     case "$watch_interval" in
         ''|*[!0-9]*) _die "Invalid --watch-interval '$watch_interval' - must be a positive integer (seconds)" ;;
+    esac
+    case "$unsafe_bypass" in
+        true|false) ;;
+        *) _die "Invalid --unsafe-bypass '$unsafe_bypass' - must be 'true' or 'false'" ;;
     esac
 }
 
