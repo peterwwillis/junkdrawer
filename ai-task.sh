@@ -11,7 +11,8 @@
 # headless (`claude -p --permission-mode auto`) by default, so it cannot
 # hang on an unseen AskUserQuestion prompt; use `--interactive` to get the
 # old attachable tmux session. `resume` continues a blocked ticket, and
-# `watch` polls Linear and auto-resumes on human replies. The agent runs
+# `watch` polls Linear and auto-resumes when a human replies with a
+# comment starting with `ai-task: resume`. The agent runs
 # in a pristine login shell (env -i, HOME/TERM/LANG only) so nothing from
 # your interactive terminal - exported credentials included - leaks in.
 # Credentials are injected via --creds-loader / AITASK_CREDS_LOADER: a
@@ -49,12 +50,16 @@ REPO_NAME="<repo>"   # placeholder; resolved by cmd_start (best-effort in _usage
 
 # Creds-loader capture state (see _run_creds_loader). Initialized here so
 # _report_plan/_launch_tmux are safe under set -u even when the loader
-# never ran (not configured, or dry run).
+# never ran (not configured, or dry run). NOTE: it must stay an ARRAY -
+# `+=` on a scalar silently concatenates without separators - and every
+# user of "${creds_env_args[@]}" guards with a length check, because macOS
+# bash 3.2 errors on "${empty_array[@]}" under set -u.
 creds_env_names=""
-creds_env_args=""
+creds_env_args=()
 
 _err ()  { printf "%s: Error: %s\n" "$SCRIPT" "$*" 1>&2 ; }
 _info () { printf "%s: Info: %s\n" "$SCRIPT" "$*" 1>&2 ; }
+_warn () { printf "%s: Warning: %s\n" "$SCRIPT" "$*" 1>&2 ; }
 _die ()  { _err "$@"; exit 1; }
 
 # _require_cmd TOOL [HINT]
@@ -62,31 +67,6 @@ _require_cmd () {
     local tool="$1" hint="${2:-}"
     command -v "$tool" >/dev/null 2>&1 \
         || _die "Required command '$tool' not found in PATH${hint:+ - $hint}"
-}
-
-# _resolve_github_username
-#
-# Best-effort lookup of the current user's GitHub/Git username for the
-# `Bash(git push <user>/*)` allow pattern. Tries, in order:
-#   1. `gh api user --jq .login`        (authenticated gh CLI)
-#   2. `git config --get github.user`   (git's github.user setting)
-#   3. $USER                             (system username)
-# The result is sanitized to [A-Za-z0-9._-]+ so it can be safely embedded
-# in a Bash allow pattern. Empty stdout means we couldn't determine a
-# safe value - callers should skip the per-user pattern in that case
-# rather than fall back to a wildcard.
-_resolve_github_username () {
-    local u=""
-    if command -v gh >/dev/null 2>&1 ; then
-        u="$(gh api user --jq .login 2>/dev/null || true)"
-    fi
-    if [ -z "$u" ] && command -v git >/dev/null 2>&1 ; then
-        u="$(git config --get github.user 2>/dev/null || true)"
-    fi
-    if [ -z "$u" ] ; then
-        u="${USER:-}"
-    fi
-    printf '%s' "$u" | tr -cd 'A-Za-z0-9._-'
 }
 
 # Print the usage text (exits 0 on -h/--help; error paths go via
@@ -113,18 +93,23 @@ Commands:
                          Linear state. Exits 0 whether it finds zero or
                          many issues; only errors if the Linear query
                          itself fails (e.g. bad team, not authenticated).
-  start TICKET-ID        Create a worktree + tmux session for the given
+  start TICKET-ID         Create a worktree + tmux session for the given
                           Linear issue (e.g. \`$SCRIPT start DVOPS-1234\`).
                           Pass --first instead of a ticket id to pick the
                           top match from the same filters \`list\` uses.
-                          Claude runs headless (\`claude -p --permission-mode auto\`) by default;
-                          use --interactive for the old tmux attach mode.
-  resume TICKET-ID        Resume a previously started ticket. Reads the
-                          latest blocked marker comment and any newer human
-                          replies from Linear, then launches a headless
-                          continuation in the existing worktree.
+                          Claude runs headless (\`claude -p --permission-mode
+                          auto\`) by default; use --interactive for the old
+                          tmux attach mode.
+  resume TICKET-ID        Resume a previously started ticket. Requires a
+                          comment starting with \`ai-task: resume\` newer
+                          than the latest \`<!-- ai-task: blocked -->\`
+                          marker; launches a headless continuation in the
+                          existing worktree.
   watch TICKET-ID         Poll a blocked ticket's Linear comments and
-                          automatically \`resume\` when a human replies.
+                          automatically \`resume\` when a comment starting
+                          with \`ai-task: resume\` appears. Note: \`watch\`
+                          does not run in the background on its own - it
+                          polls until then and exec's \`resume\` in place.
   aws-preauth OUTDIR ROLE  Mint read-only AWS credentials for every account
                           with a ':ROLE' profile into OUTDIR. Used
                           internally by AWS ReadOnly mode (opt-in -
@@ -1051,8 +1036,9 @@ _write_claude_sandbox_config () {
     # Pick the effective allow list: user-supplied AITASK_ALLOWED_COMMANDS
     # replaces the defaults entirely (no append - keep the contract simple).
     # An empty/unset AITASK_ALLOWED_COMMANDS uses the built-in defaults,
-    # which include a `git push <user>/*` pattern whose `<user>` is derived
-    # from gh / git config / $USER (not hardcoded).
+    # which allow pushing to the worktree's own origin remote - the generic
+    # `git push origin *` needs no username lookup and matches whatever
+    # branch name the agent actually picks.
     local -a cmds
     if [ ${#allowed_commands[@]} -gt 0 ] ; then
         cmds=("${allowed_commands[@]}")
@@ -1061,14 +1047,8 @@ _write_claude_sandbox_config () {
             "Bash(linear issue comment add *)"
             "Bash(linear issue update *)"
             "Bash(gh pr create *)"
+            "Bash(git push origin *)"
         )
-        local gh_user
-        gh_user="$(_resolve_github_username)"
-        if [ -n "$gh_user" ] ; then
-            cmds+=("Bash(git push $gh_user/*)")
-        else
-            _info "Couldn't determine your GitHub username (gh api / git config github.user / \$USER all empty); skipping 'git push <user>/*' from the default allow list. Add it manually via AITASK_ALLOWED_COMMANDS if needed."
-        fi
     fi
     local cmds_json
     cmds_json="$(printf '%s\n' "${cmds[@]}" | jq -R . | jq -s .)"
@@ -1168,8 +1148,10 @@ stalling.
 CRITICAL: this session is headless. You cannot ask the user questions and
 you must not use any AskUserQuestion, question, or interactive-prompt tool.
 If you need a decision or clarification, post a Linear comment that starts
-with the marker \`<!-- ai-task: blocked -->\`, explain the options and what
-you need, move the ticket to "$blocked_state"
+with the marker \`<!-- ai-task: blocked -->\`, ask your questions
+numbered, and tell the user to reply with a comment starting with
+\`ai-task: resume\` (one reply can answer all of them; \`ai-task resume\`
+picks it up), move the ticket to "$blocked_state"
 (\`linear issue update $identifier --state "$blocked_state"\`), commit any
 progress, and stop. Do not wait for a reply.
 
@@ -1181,7 +1163,8 @@ at each of these milestones:
    restricted scope or permissions: keep working on everything else you
    can first, note the gap clearly in the PR description (step 3), then
    comment starting with \`<!-- ai-task: blocked -->\` explaining exactly
-   what's needed, move the ticket to "$blocked_state"
+   what's needed and that the user's reply should start with
+   \`ai-task: resume\`, move the ticket to "$blocked_state"
    (\`linear issue update $identifier --state "$blocked_state"\`), and stop.
 3. When finished (fully, or as far as this session could get): commit
    your work and open a PR with \`gh pr create\` referencing this ticket
@@ -1191,7 +1174,7 @@ at each of these milestones:
 
    Note: this session runs with Claude Code's \`auto\` permission mode,
    which routes tool calls through a safety classifier. The
-   pre-approved allow list (Bash \`gh pr create\`, \`git push <user>/*\`,
+   pre-approved allow list (Bash \`gh pr create\`, \`git push origin *\`,
    \`linear ...\`) is evaluated first, so those run without review. If
    the classifier blocks a \`gh pr create\` or \`git push\` it judges
    out of scope anyway, commit your work, post a final Linear comment
@@ -1315,25 +1298,43 @@ EOLAUNCHER
                 # shellcheck disable=SC2016  # "$(cat ...)" must expand when the agent runs, not now
                 printf ' "$(cat %q)"\n' "$prompt_file_out"
             else
-                # Headless mode: run claude -p to completion, capture the result
-                # and session id, then keep the tmux pane alive on the log so
-                # `tmux attach` still shows what happened.
+                # Headless mode: run claude -p to completion, capture the
+                # result and session id, then keep the tmux pane alive on
+                # the log so `tmux attach` still shows what happened.
                 #
-                # Permission mode: by default `auto` (Claude Code's background
-                # safety classifier - auto-approves safe actions, blocks
-                # risky/external ones). `--unsafe-bypass` opts into
-                # `bypassPermissions` (no checks) for environments where the
-                # classifier is unavailable or too restrictive. A warning is
-                # emitted to stderr and the log when bypass is used.
-                local claude_args perm_mode
+                # Prompt channel (empirically verified 2026-10, claude
+                # 2.1.299): with --system-prompt-snapshot on (the default),
+                # the system prompt is recorded on a session's first request
+                # and replayed verbatim on every later request AND resume -
+                # new --append-system-prompt text passed on a resumed run is
+                # silently discarded. User messages are always delivered.
+                # So:
+                #   fresh start -> instructions ride via
+                #   --append-system-prompt-file (delivered, and becomes the
+                #   recorded system prompt);
+                #   resume -> the human's Linear replies ride as the user
+                #   message.
+                # Don't collapse these into one channel without re-testing.
+                #
+                # Permission mode: by default `auto` (Claude Code's
+                # background safety classifier - auto-approves safe actions,
+                # blocks risky/external ones). `--unsafe-bypass` opts into
+                # `bypassPermissions` (no checks) - its warning is emitted
+                # on the trusted side in _launch_tmux.
+                local perm_mode
                 if [ "$unsafe_bypass" = "true" ] ; then
                     perm_mode="bypassPermissions"
                 else
                     perm_mode="auto"
                 fi
-                claude_args="-p --permission-mode $perm_mode --output-format json --append-system-prompt-file \"\$current_prompt_file\""
-                [ -z "$model" ] || claude_args="$claude_args --model $(printf '%q' "$model")"
-                [ -z "$agent_settings" ] || claude_args="$claude_args --settings $(printf '%q' "$agent_settings")"
+                # The claude invocation is built as a bash ARRAY (invoked
+                # later with "${claude_args[@]}") so tokens never depend on
+                # IFS splitting at the call site; a string-embedded
+                # --append-system-prompt-file path previously reached claude
+                # wrapped in literal double quotes.
+                printf 'claude_args=(-p --permission-mode %q --output-format json)\n' "$perm_mode"
+                [ -z "$model" ] || printf 'claude_args+=(--model %q)\n' "$model"
+                [ -z "$agent_settings" ] || printf 'claude_args+=(--settings %q)\n' "$agent_settings"
                 cat <<EOHEADLESS
 prompt_file=".aitask-prompt.txt"
 resume_file=".aitask-resume-prompt.txt"
@@ -1342,41 +1343,40 @@ result_file=".aitask-result.json"
 log_file=".aitask.log"
 status_file=".aitask-status.json"
 
-if [ -s "\$resume_file" ] ; then
-    current_prompt_file="\$resume_file"
-else
-    current_prompt_file="\$prompt_file"
-fi
-
-resume_arg=""
 if [ -s "\$session_file" ] ; then
-    resume_arg="--resume \$(cat "\$session_file")"
+    # Resume: new content must enter as the user message (see header note).
+    claude_args+=(--resume "\$(cat "\$session_file")")
+    if [ -s "\$resume_file" ] ; then
+        final_prompt="\$(cat "\$resume_file")"
+    else
+        final_prompt="Work on $identifier."
+    fi
+else
+    claude_args+=(--append-system-prompt-file "\$prompt_file")
+    final_prompt="Work on $identifier."
 fi
 
 printf '\n=== ai-task run started at %s ===\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$log_file"
 
-if [ "${AITASK_UNSAFE_BYPASS:-0}" = "1" ] ; then
-    warn='WARNING: --unsafe-bypass is set; running claude with --permission-mode bypassPermissions. No safety checks: the agent can edit any file, run any command, and make any network call. Only use on tickets you trust the agent with completely.'
-    printf '%s\n' "\$warn" >&2
-    printf '\n%s\n' "\$warn" >> "\$log_file"
-fi
-
 set +e
-claude $claude_args \$resume_arg "Work on $identifier." > "\$result_file" 2>> "\$log_file"
+claude "\${claude_args[@]}" "\$final_prompt" > "\$result_file" 2>> "\$log_file"
 run_status=\$?
 set -e
 
 if [ -s "\$result_file" ] ; then
-    jq -r '.session_id // empty' "\$result_file" > "\$session_file.tmp"
+    # --output-format json: an events ARRAY on current builds (2.1.299+),
+    # a single object on older ones - take the result event from either.
+    jq -r 'if type=="object" then . else (map(select(.type=="result")) | last) end | .session_id // empty' "\$result_file" > "\$session_file.tmp"
     [ -s "\$session_file.tmp" ] && mv "\$session_file.tmp" "\$session_file"
     printf '\n=== ai-task result ===\n' >> "\$log_file"
-    jq -r '.result // empty' "\$result_file" >> "\$log_file"
+    jq -r 'if type=="object" then . else (map(select(.type=="result")) | last) end | .result // empty' "\$result_file" >> "\$log_file"
 fi
 printf '\n=== ai-task run finished (exit %s) at %s ===\n' "\$run_status" "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$log_file"
 jq -n --arg status "\$run_status" --arg result_file "\$result_file" '{status: \$status, result_file: \$result_file, finishedAt: now}' > "\$status_file"
 
-# If --watch was requested and the ticket is blocked, start the watcher.
-if [ "\${AITASK_WATCH:-0}" = "1" ] && [ -n "\${AITASK_BIN:-}" ] ; then
+# If --watch was requested (AITASK_WATCH=true) and the ticket ended up
+# blocked, start a watcher.
+if [ "\${AITASK_WATCH:-}" = "true" ] && [ -n "\${AITASK_BIN:-}" ] ; then
     issue_state=\$(linear issue view "$identifier" --json 2>/dev/null | jq -r '.state.name // empty' || true)
     if [ "\$issue_state" = "$blocked_state" ] ; then
         tmux new-session -d -s "aitask-watch-$lower_id" -c "\$PWD" "\$AITASK_BIN" watch "$identifier"
@@ -1428,15 +1428,27 @@ _launch_tmux () {
             fi
             ;;
     esac
-    e_args+=(-e "AITASK_WATCH=$([ "$watch" = "true" ] && echo 1 || echo 0)")
-    e_args+=(-e "AITASK_UNSAFE_BYPASS=$([ "$unsafe_bypass" = "true" ] && echo 1 || echo 0)")
+    # Boolean env vars must be the literal strings "true"/"false": the
+    # spawned watch/resume launches re-run _validate_options, which rejects
+    # any other encoding (a "1"/"0" encoding here previously made every
+    # watcher spawned by the headless launcher _die on startup).
+    e_args+=(-e "AITASK_WATCH=$watch")
+    e_args+=(-e "AITASK_UNSAFE_BYPASS=$unsafe_bypass")
+    e_args+=(-e "AITASK_WATCH_INTERVAL=$watch_interval")
     e_args+=(-e "AITASK_BIN=$aitask_bin")
     e_args+=(-e "AITASK_IDENTIFIER=$identifier")
     e_args+=(-e "AITASK_BLOCKED_STATE=$blocked_state")
     e_args+=(-e "AITASK_LOWER_ID=$lower_id")
-    for kv in "${creds_env_args[@]}" ; do
-        e_args+=(-e "$kv")
-    done
+    # Length-guarded: "${empty_array[@]}" errors under set -u on macOS
+    # bash 3.2.
+    if [ "${#creds_env_args[@]}" -gt 0 ] ; then
+        for kv in "${creds_env_args[@]}" ; do
+            e_args+=(-e "$kv")
+        done
+    fi
+    if [ "$unsafe_bypass" = "true" ] ; then
+        _warn "--unsafe-bypass is set: claude runs with --permission-mode bypassPermissions. No safety checks - the agent can edit any file, run any command, and make any network call. Only use on tickets you trust the agent with completely."
+    fi
     tmux new-session -d -s "$session" "${e_args[@]}" -c "$worktree_dir" "$launcher_file"
 }
 
@@ -1558,11 +1570,20 @@ _find_worktree_dir_for_ticket () {
 # _build_resume_prompt TICKET
 #
 # Sets global resume_prompt by reading the issue, finding the latest
-# <!-- ai-task: blocked --> comment, and collecting any newer human replies.
+# <!-- ai-task: blocked --> comment, and collecting the newer comments the
+# human sent by replying with a comment starting with `ai-task: resume`.
+#
+# Why a trigger phrase instead of "any newer comment": all agent runs share
+# the owner's Linear account, so agent milestone comments and human replies
+# are indistinguishable by author; without a trigger the agent's own
+# progress comments would be read as replies and feed an auto-resume loop.
+# The agent's blocked instructions tell the user to reply starting with
+# the marker.
 _build_resume_prompt () {
-    local ticket="$1" issue_json comments_json blocked_marker
+    local ticket="$1" issue_json comments_json blocked_marker resume_marker
     local blocked_id blocked_time replies_json reply_count reply_bodies
     blocked_marker="<!-- ai-task: blocked -->"
+    resume_marker="ai-task: resume"
 
     issue_json="$(linear issue view "$ticket" --json)" \
         || _die "Could not fetch issue '$ticket' from Linear."
@@ -1585,13 +1606,14 @@ _build_resume_prompt () {
         | [ .[] | select(.id == $id) ] | first | .createdAt // empty
     ')"
 
-    replies_json="$(printf '%s' "$comments_json" | jq -r --arg marker "$blocked_marker" --arg t "$blocked_time" '
+    replies_json="$(printf '%s' "$comments_json" | jq -r --arg marker "$resume_marker" --arg t "$blocked_time" '
         (if type == "object" and has("nodes") then .nodes else . end)
-        | [ .[] | select(((.body // "") | contains($marker) | not) and .createdAt > $t) ]
+        | [ .[] | select(((.body // "") | contains($marker)) and .createdAt > $t) ]
         | sort_by(.createdAt)
     ')"
     reply_count="$(printf '%s' "$replies_json" | jq 'length')"
-    [ "$reply_count" -gt 0 ] || _die "No new replies after the blocked marker on $ticket - nothing to resume."
+    [ "$reply_count" -gt 0 ] \
+        || _die "No comment starting with '$resume_marker' after the latest blocked marker on $ticket - nothing to resume."
 
     reply_bodies="$(printf '%s' "$replies_json" | jq -r '.[] | "\n--- Reply (\(.createdAt)) ---\n\(.body)"')"
 
@@ -1603,7 +1625,7 @@ $url
 The user replied via Linear:
 $reply_bodies
 
-Please continue. If you are still blocked, post a Linear comment starting with \`$blocked_marker\`, move the ticket to "$blocked_state", commit any progress, and stop.
+Please continue. If you are still blocked, post a Linear comment starting with \`$blocked_marker\`, tell the user to reply starting with \`$resume_marker\`, move the ticket to "$blocked_state", commit any progress, and stop.
 EOP
 }
 
@@ -1624,10 +1646,12 @@ cmd_resume () {
 
 # ── watch command ────────────────────────────────────────────────────────────
 
-# Polls Linear for human replies to a blocked ai-task marker and resumes work.
+# Polls Linear for a human reply containing the `ai-task: resume` trigger
+# (see the comment above _build_resume_prompt for why a trigger phrase is
+# required) and hands over to `resume` in place.
 cmd_watch () {
     [ -n "$ticket_id" ] || _die "Usage: $SCRIPT watch <TICKET-ID> [OPTIONS]"
-    local blocked_marker="<!-- ai-task: blocked -->"
+    local blocked_marker="<!-- ai-task: blocked -->" resume_marker="ai-task: resume"
     local issue_json state comments_json blocked_id blocked_time
     local replies_json reply_count reply_bodies
     local aitask_bin
@@ -1645,9 +1669,8 @@ cmd_watch () {
     esac
 
     _find_worktree_dir_for_ticket "$ticket_id"
-    _info "Watching $ticket_id for replies (interval ${watch_interval}s; worktree $worktree_dir). Press Ctrl-C to stop."
+    _info "Watching $ticket_id for an '$resume_marker' reply (interval ${watch_interval}s; worktree $worktree_dir). Press Ctrl-C to stop."
 
-    local last_resumed_blocked_id=""
     while true ; do
         issue_json="$(linear issue view "$ticket_id" --json)" || {
             _err "Failed to fetch issue $ticket_id; retrying in ${watch_interval}s..."
@@ -1676,39 +1699,36 @@ cmd_watch () {
             sleep "$watch_interval"
             continue
         fi
-        if [ "$blocked_id" = "$last_resumed_blocked_id" ] ; then
-            # Already resumed for this marker; wait for a new one or a state change.
-            sleep "$watch_interval"
-            continue
-        fi
 
         blocked_time="$(printf '%s' "$comments_json" | jq -r --arg id "$blocked_id" '
             (if type == "object" and has("nodes") then .nodes else . end)
             | [ .[] | select(.id == $id) ] | first | .createdAt // empty
         ')"
 
-        replies_json="$(printf '%s' "$comments_json" | jq -r --arg marker "$blocked_marker" --arg t "$blocked_time" '
+        replies_json="$(printf '%s' "$comments_json" | jq -r --arg marker "$resume_marker" --arg t "$blocked_time" '
             (if type == "object" and has("nodes") then .nodes else . end)
-            | [ .[] | select(((.body // "") | contains($marker) | not) and .createdAt > $t) ]
+            | [ .[] | select(((.body // "") | contains($marker)) and .createdAt > $t) ]
             | sort_by(.createdAt)
         ')"
         reply_count="$(printf '%s' "$replies_json" | jq 'length')"
         if [ "$reply_count" -gt 0 ] ; then
-            _info "New reply(s) detected on $ticket_id. Resuming..."
+            _info "'$resume_marker' reply detected on $ticket_id. Handing over to 'resume'..."
             reply_bodies="$(printf '%s' "$replies_json" | jq -r '.[] | "\n--- Reply (\(.createdAt)) ---\n\(.body)"')"
+            # shellcheck disable=SC2016  # %s placeholders, not shell expressions
             {
                 printf 'Continuing work on Linear issue %s.\n\n' "$ticket_id"
                 printf 'The user replied via Linear:%s\n\n' "$reply_bodies"
-                printf 'Please continue. If you are still blocked, post a Linear comment starting with `%s`, move the ticket to "%s", commit any progress, and stop.\n' "$blocked_marker" "$blocked_state"
+                printf 'Please continue. If you are still blocked, post a Linear comment starting with `%s`, tell the user to reply starting with `%s`, move the ticket to "%s", commit any progress, and stop.\n' "$blocked_marker" "$resume_marker" "$blocked_state"
             } > "$worktree_dir/.aitask-resume-prompt.txt"
-            # Kill any stale headless session so resume can reuse the name.
-            tmux kill-session -t "aitask-$(printf '%s' "$ticket_id" | tr '[:upper:]' '[:lower:]')" 2>/dev/null || true
-            # Stop the old watcher and the stale headless session before
-            # resuming, then ask the resume run to keep watching.
-            tmux kill-session -t "aitask-watch-$lower_id" 2>/dev/null || true
+            # Hand over in place: exec replaces this watcher with `resume`,
+            # whose cmd_start launches the real run session - no duplicate
+            # "aitask-*" name races between watcher and resume. The old run
+            # session is normally already dead (its headless launcher exits
+            # when claude -p finishes); kill it defensively anyway. The
+            # exec'd resume inherits AITASK_WATCH=true, so if it blocks
+            # again its headless launcher starts the next watcher.
             tmux kill-session -t "aitask-$lower_id" 2>/dev/null || true
-            tmux new-session -d -s "aitask-$lower_id" -c "$worktree_dir" "$aitask_bin" resume "$ticket_id" --watch
-            last_resumed_blocked_id="$blocked_id"
+            exec "$aitask_bin" resume "$ticket_id"
         fi
 
         sleep "$watch_interval"
