@@ -1167,10 +1167,13 @@ at each of these milestones:
    \`ai-task: resume\`, move the ticket to "$blocked_state"
    (\`linear issue update $identifier --state "$blocked_state"\`), and stop.
 3. When finished (fully, or as far as this session could get): commit
-   your work and open a PR with \`gh pr create\` referencing this ticket
-   with "ref $identifier" in the PR body (not a closing keyword like
-   "fixes"). No test-plan checklist, no "Generated with Claude Code"
-   line. Then post a final Linear comment with the PR link.
+   your work and open a PR with \`gh pr create --draft\` referencing this
+   ticket with "ref $identifier" in the PR body (not a closing keyword
+   like "fixes"). ALWAYS pass \`--draft\`: never open a non-draft PR, and
+   never run \`gh pr ready\` - a non-draft PR notifies reviewers
+   immediately, and a human marks it ready once they've looked it over.
+   No test-plan checklist, no "Generated with Claude Code" line. Then
+   post a final Linear comment with the PR link.
 
    Note: this session runs with Claude Code's \`auto\` permission mode,
    which routes tool calls through a safety classifier. The
