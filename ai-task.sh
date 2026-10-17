@@ -262,6 +262,18 @@ has an AITASK_<NAME> env var equivalent):
                               registered, Termic CLI disabled, ...) the
                               script warns and continues - the tmux session
                               is already usable regardless.
+                              Headless claude (the default): the session id
+                              is pre-assigned (\`--session-id\`) and the
+                              task is registered as soon as the session's
+                              first message is on disk (~2s; a session is
+                              not resumable before that). Don't type in the
+                              Termic tab until the headless run finishes -
+                              both processes share one transcript. The run
+                              is launched with CLAUDE_CODE_ENTRYPOINT=
+                              ai-task so the session also shows up in
+                              claude's own /resume picker (claude hides
+                              \`sdk-cli\` sessions, which is what plain
+                              \`claude -p\` records).
   --prompt-file PATH          Use this file as the prompt instead of the
                               built-in template (supports {{IDENTIFIER}},
                               {{TITLE}}, {{URL}}, {{DESCRIPTION}},
@@ -511,6 +523,54 @@ _wait_for_session_id () {
     return 1
 }
 
+# _new_uuid -> prints a fresh lowercase UUID (empty + non-zero if no
+# generator is available).
+_new_uuid () {
+    local u=""
+    if command -v uuidgen >/dev/null 2>&1 ; then
+        u="$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    elif [ -r /proc/sys/kernel/random/uuid ] ; then
+        u="$(cat /proc/sys/kernel/random/uuid)"
+    elif command -v python3 >/dev/null 2>&1 ; then
+        u="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)"
+    fi
+    [ -n "$u" ] && { printf '%s' "$u"; return 0; }
+    return 1
+}
+
+# _transcript_has_user_line SESSION_ID
+#
+# True iff claude's transcript for SESSION_ID holds a user message. That is
+# the point at which `claude --resume <id>` starts working: before it the
+# resume fails with "No conversation found with session ID". Looks in
+# $CLAUDE_CONFIG_DIR (if set) and ~/.claude, any project dir, so it doesn't
+# depend on how claude encodes the worktree path. SESSION_ID is validated
+# as a UUID first because it is used in a glob.
+_transcript_has_user_line () {
+    local sid="$1" dir f
+    [[ "$sid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+    for dir in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$HOME/.claude" ; do
+        for f in "$dir"/projects/*/"$sid".jsonl ; do
+            [ -f "$f" ] && grep -q '"type":"user"' "$f" 2>/dev/null && return 0
+        done
+    done
+    return 1
+}
+
+# _wait_for_transcript SESSION_ID
+#
+# Polls (0.5s interval, up to 30s) until _transcript_has_user_line is true.
+# A headless `claude -p` session is listed (and its id is known) as soon as
+# the process starts, but its first user message reaches disk ~2s later.
+_wait_for_transcript () {
+    local sid="$1" attempt
+    for (( attempt = 1 ; attempt <= 60 ; attempt++ )) ; do
+        _transcript_has_user_line "$sid" && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
 # _do_termic_new_task WORKTREE_DIR AGENT_TYPE
 #
 # Opt-in post-launch hook: register the just-created worktree + AI agent
@@ -534,14 +594,51 @@ _do_termic_new_task () {
         return 0
     fi
 
-    _info "Waiting for $agent_type session to register (up to 30s)..."
-    if ! session_id="$(_wait_for_session_id "$agent_type" "$worktree_dir")" ; then
-        _err "Couldn't auto-discover $agent_type session id for $worktree_dir after 30s."
-        _err "The tmux session and agent are still running. You can wire this up manually:"
-        _err "  termic new --from $worktree_dir --resume <session-id>"
-        return 0
+    # Headless claude: the session id is already known (pre-assigned via
+    # --session-id, or recorded by an earlier run), so there is nothing to
+    # discover - but it is only resumable once its first user message is on
+    # disk. Termic applies `--resume` on a task's FIRST spawn only, so
+    # registering earlier burns that one resume on a "No conversation
+    # found" failure and the tab is never bound to the session.
+    if [ "$agent_type" = "claude" ] && [ "$interactive" != "true" ] ; then
+        # A non-empty .aitask-session-id means this run CONTINUES an existing
+        # session (`resume`/`watch` re-run cmd_start; so does
+        # --reuse-worktree): the first run already registered it, and a
+        # second `termic new` for the same worktree would at best fail.
+        session_id="$(cat "$worktree_dir/.aitask-session-id" 2>/dev/null || true)"
+        if [ -n "$session_id" ] ; then
+            _info "Termic: continuing existing session $session_id - not registering a second task."
+            return 0
+        fi
+        session_id="${planned_session_id:-}"
+        if [ -z "$session_id" ] ; then
+            _info "Waiting for $agent_type session to register (up to 30s)..."
+            session_id="$(_wait_for_session_id "$agent_type" "$worktree_dir" || true)"
+        fi
+        if [ -z "$session_id" ] ; then
+            _err "Couldn't determine the $agent_type session id for $worktree_dir."
+            _err "The tmux session and agent are still running. You can wire this up manually:"
+            _err "  termic new --from $worktree_dir --resume <session-id>"
+            return 0
+        fi
+        _info "Session id: $session_id"
+        _info "Waiting for the session's first message to reach disk (up to 30s)..."
+        if ! _wait_for_transcript "$session_id" ; then
+            _err "Session $session_id has no resumable transcript after 30s (claude may have failed to start - see $worktree_dir/.aitask.log)."
+            _err "Once it has one, wire this up manually:"
+            _err "  termic new --from $worktree_dir --resume $session_id"
+            return 0
+        fi
+    else
+        _info "Waiting for $agent_type session to register (up to 30s)..."
+        if ! session_id="$(_wait_for_session_id "$agent_type" "$worktree_dir")" ; then
+            _err "Couldn't auto-discover $agent_type session id for $worktree_dir after 30s."
+            _err "The tmux session and agent are still running. You can wire this up manually:"
+            _err "  termic new --from $worktree_dir --resume <session-id>"
+            return 0
+        fi
+        _info "Discovered session id: $session_id"
     fi
-    _info "Discovered session id: $session_id"
 
     # Capture stdout only - termic's stderr (warnings/progress) passes
     # through to the user untouched. Folding it into the JSON would corrupt
@@ -1338,6 +1435,31 @@ EOLAUNCHER
                 printf 'claude_args=(-p --permission-mode %q --output-format json)\n' "$perm_mode"
                 [ -z "$model" ] || printf 'claude_args+=(--model %q)\n' "$model"
                 [ -z "$agent_settings" ] || printf 'claude_args+=(--settings %q)\n' "$agent_settings"
+                # Session id: pre-assigned here (global planned_session_id,
+                # read by _do_termic_new_task) and baked into the launcher
+                # as --session-id for a fresh run. Knowing the id up front
+                # means Termic registration needs no discovery step, just a
+                # wait for the first message to reach disk. Verified
+                # 2026-10 (claude 2.1.302): `-p --session-id <uuid>` names
+                # the transcript <uuid>.jsonl; claude refuses --session-id
+                # for an id that already exists ("already in use"), which
+                # the launcher guards below. If no UUID generator exists the
+                # launcher just omits --session-id and registration falls
+                # back to discovering the id from `claude agents`.
+                planned_session_id="$(_new_uuid || true)"
+                [ -n "$planned_session_id" ] || _warn "No UUID generator (uuidgen, python3) found - the headless session id can't be pre-assigned."
+                printf 'planned_sid=%q\n' "$planned_session_id"
+                # CLAUDE_CODE_ENTRYPOINT: a headless run records
+                # "entrypoint":"sdk-cli" in its transcript and claude's
+                # /resume picker hides every sdk-cli/sdk-ts/sdk-py session.
+                # `cli` is rewritten back to sdk-cli in print mode, but any
+                # other value is kept as-is and the session is listed
+                # (verified 2026-10, claude 2.1.302, with the real picker).
+                # The launcher runs under `env -i`, so it is set inline on
+                # the command, not exported from the caller. If a future
+                # claude ignores this, only the /resume listing is lost:
+                # Termic resumes by session id and `claude --resume <id>`
+                # still works.
                 cat <<EOHEADLESS
 prompt_file=".aitask-prompt.txt"
 resume_file=".aitask-resume-prompt.txt"
@@ -1357,12 +1479,22 @@ if [ -s "\$session_file" ] ; then
 else
     claude_args+=(--append-system-prompt-file "\$prompt_file")
     final_prompt="Work on $identifier."
+    if [ -n "\$planned_sid" ] ; then
+        if compgen -G "\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/projects/*/\$planned_sid.jsonl" > /dev/null ; then
+            # An earlier run of this launcher already created the session
+            # but died before recording its id: continue it, since claude
+            # rejects --session-id for an existing id.
+            claude_args+=(--resume "\$planned_sid")
+        else
+            claude_args+=(--session-id "\$planned_sid")
+        fi
+    fi
 fi
 
 printf '\n=== ai-task run started at %s ===\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$log_file"
 
 set +e
-claude "\${claude_args[@]}" "\$final_prompt" > "\$result_file" 2>> "\$log_file"
+CLAUDE_CODE_ENTRYPOINT=ai-task claude "\${claude_args[@]}" "\$final_prompt" > "\$result_file" 2>> "\$log_file"
 run_status=\$?
 set -e
 
@@ -1459,6 +1591,10 @@ _launch_tmux () {
 # Best-effort - any failure (termic not installed, session not yet
 # registered, etc.) is a warning, not an error. The tmux session above is
 # already usable regardless of whether this succeeds.
+#
+# Headless claude: blocks (up to 30s, normally ~2s) until the session's first
+# user message is on disk, because Termic's one-shot `--resume` fails before
+# that (see _do_termic_new_task).
 _register_termic () {
     [ -n "$termic_action" ] || return 0
     case "$termic_action" in
