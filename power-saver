@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# power-saver — toggle laptop into/out of low-power mode
+# Usage: power-saver [on|off|status|install|uninstall]
+#   on       enter low-power mode (stops VM, disables bluetooth, dims screen)
+#   off      restore normal operation
+#   status   show current state (default)
+#   install  install + enable systemd service that runs 'on' at boot
+#   uninstall  disable + remove the systemd service
+#
+# WiFi is never touched.
+set -euo pipefail
+
+COLIMA_PROFILE="ai-agent-1"
+STATE_DIR="${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/power-saver"
+STATE_FILE="$STATE_DIR/brightness"
+BLUETOOTH_SYSFS="/sys/class/backlight/amdgpu_bl1/brightness"
+DIM_LEVEL=19400            # ~30% of 64764 max
+
+SCRIPT_PATH="$(readlink -f "$0")"
+UNIT_NAME="power-saver.service"
+UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
+
+msg()  { printf '%s\n' "$*"; }
+root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
+
+vm_running() {
+  command -v colima >/dev/null && colima list 2>/dev/null | awk '{print $2}' | grep -qx "$COLIMA_PROFILE"
+}
+
+do_on() {
+  msg "== Entering low-power mode =="
+
+  # 1. Stop the Colima VM (biggest consumer)
+  if vm_running; then
+    msg "-> stopping colima VM '$COLIMA_PROFILE'"
+    colima stop "$COLIMA_PROFILE" || msg "   (warn: colima stop failed)"
+  else
+    msg "-> colima VM '$COLIMA_PROFILE' not running"
+  fi
+
+  # 2. Bluetooth off (soft-block survives reboot until unblocked)
+  if command -v rfkill >/dev/null && ! rfkill list bluetooth | grep -q 'Soft blocked: yes'; then
+    root systemctl stop bluetooth.service || true
+    root rfkill block bluetooth
+    msg "-> bluetooth blocked"
+  else
+    msg "-> bluetooth already blocked"
+  fi
+
+  # 3. Dim screen (save previous level for restore)
+  local cur
+  cur=$(cat "$BLUETOOTH_SYSFS" 2>/dev/null || echo "")
+  if [[ -n $cur ]]; then
+    mkdir -p "$STATE_DIR"
+    # only overwrite saved value if not already dimmed
+    if (( cur > DIM_LEVEL )); then
+      echo "$cur" > "$STATE_FILE"
+      chmod 600 "$STATE_FILE"
+    fi
+    echo "$DIM_LEVEL" > "$BLUETOOTH_SYSFS" 2>/dev/null \
+      && msg "-> brightness ${cur} -> ${DIM_LEVEL}" \
+      || msg "-> (warn) could not write brightness; run: sudo tee $BLUETOOTH_SYSFS <<< $DIM_LEVEL"
+  fi
+
+  # 4. Optional kernel tunings (needs root)
+  if [[ $EUID -eq 0 ]] || sudo -n true 2>/dev/null; then
+    if command -v powertop >/dev/null; then
+      root powertop --auto-tune || true
+      msg "-> powertop --auto-tune applied"
+      # Disable autosuspend for USB keyboards, mice, touchpads (input devices)
+      # This mirrors the logic in bin/disable-usb-input-autosuspend.sh
+      for dev in /sys/bus/usb/devices/*; do
+          [[ -d "$dev" ]] || continue
+          if find "$dev" -maxdepth 2 -type d -name input -print -quit >/dev/null 2>&1; then
+              if [[ $EUID -eq 0 ]]; then
+                  echo on > "$dev/power/control" 2>/dev/null || true
+                  echo -1 > "$dev/power/autosuspend_delay_ms" 2>/dev/null || true
+              else
+                  echo on | sudo tee "$dev/power/control" >/dev/null 2>&1 || true
+                  echo -1 | sudo tee "$dev/power/autosuspend_delay_ms" >/dev/null 2>&1 || true
+              fi
+          fi
+      done
+      msg "-> USB input devices autosuspend disabled"
+    fi
+  else
+    msg "-> skipping powertop --auto-tune (run manually: sudo power-saver on)"
+  fi
+
+  # 5. Disable ambient-light auto-brightness so the dim sticks
+  if command -v gsettings >/dev/null; then
+    local amb
+    amb=$(gsettings get org.gnome.settings-daemon.plugins.power ambient-enabled 2>/dev/null || echo "")
+    if [[ $amb == true ]]; then
+      echo true > "$STATE_DIR/ambient-was-on"
+      gsettings set org.gnome.settings-daemon.plugins.power ambient-enabled false
+      msg "-> ambient auto-brightness disabled"
+    fi
+  fi
+
+  # 6. Power-saver profile (harmless if already active)
+  command -v powerprofilesctl >/dev/null && powerprofilesctl set power-saver || true
+
+  msg "== Done =="
+}
+
+do_off() {
+  msg "== Restoring normal power mode =="
+
+  if command -v colima >/dev/null; then
+    msg "-> starting colima VM '$COLIMA_PROFILE'"
+    colima start "$COLIMA_PROFILE" || msg "   (warn: colima start failed)"
+  fi
+
+  if command -v rfkill >/dev/null && rfkill list bluetooth | grep -q 'Soft blocked: yes'; then
+    root rfkill unblock bluetooth
+    root systemctl unmask bluetooth.service 2>/dev/null || true
+    root systemctl start bluetooth.service 2>/dev/null || true
+    msg "-> bluetooth restored"
+  else
+    msg "-> bluetooth was not blocked"
+  fi
+
+  if [[ -r $STATE_FILE ]]; then
+    local saved
+    saved=$(cat "$STATE_FILE")
+    echo "$saved" > "$BLUETOOTH_SYSFS" 2>/dev/null \
+      && msg "-> brightness restored to ${saved}" \
+      || msg "-> (warn) could not restore brightness; run: sudo tee $BLUETOOTH_SYSFS <<< $saved"
+  else
+    msg "-> no saved brightness found; leaving as-is"
+  fi
+
+  # re-enable ambient auto-brightness if we disabled it
+  if [[ -f $STATE_DIR/ambient-was-on ]]; then
+    command -v gsettings >/dev/null \
+      && gsettings set org.gnome.settings-daemon.plugins.power ambient-enabled true
+    rm -f "$STATE_DIR/ambient-was-on"
+    msg "-> ambient auto-brightness restored"
+  fi
+
+  command -v powerprofilesctl >/dev/null && powerprofilesctl set balanced || true
+  msg "== Done =="
+}
+
+do_status() {
+  msg "VM '$COLIMA_PROFILE': $(vm_running && echo running || echo stopped)"
+  if command -v rfkill >/dev/null; then
+    rfkill list bluetooth | grep -q 'Soft blocked: yes' \
+      && msg "bluetooth: blocked" || msg "bluetooth: on"
+  fi
+  msg "brightness: $(cat "$BLUETOOTH_SYSFS" 2>/dev/null || echo '?') / 64764 (dim target: $DIM_LEVEL)"
+  msg "power profile: $(command -v powerprofilesctl >/dev/null && powerprofilesctl get || echo '?')"
+  for bat in /sys/class/power_supply/BAT*; do
+    [[ -d $bat ]] || continue
+    msg "battery: $(cat "$bat/status") at $(cat "$bat/capacity")%, $(awk '{printf "%.1fW", $1/1000000}' "$bat/power_now" 2>/dev/null)"
+  done
+}
+
+cmd_install() {
+  [[ -x "$SCRIPT_PATH" ]] || chmod +x "$SCRIPT_PATH"
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo "$SCRIPT_PATH" install
+  fi
+  cat > "$UNIT_PATH" <<EOF
+[Unit]
+Description=Power saver - enter low-power mode at boot
+After=multi-user.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStart=${SCRIPT_PATH} on
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "$UNIT_NAME" >/dev/null
+  echo "installed + enabled ${UNIT_NAME} (runs '${SCRIPT_PATH} on' at boot)"
+}
+
+cmd_uninstall() {
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo "$SCRIPT_PATH" uninstall
+  fi
+  systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
+  rm -f "$UNIT_PATH"
+  systemctl daemon-reload
+  echo "removed ${UNIT_NAME}"
+}
+
+case "${1:-status}" in
+  on)     do_on ;;
+  off)    do_off ;;
+  status) do_status ;;
+  install)  cmd_install ;;
+  uninstall) cmd_uninstall ;;
+  *)      msg "usage: $0 [on|off|status|install|uninstall]"; exit 1 ;;
+esac
