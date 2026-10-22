@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+#
+# battery-charge-limit - limit ThinkPad battery charging thresholds.
+#
+# Default: resume charging at 75%, stop charging at 80%.
+# The sysfs threshold files are owned by root, so this script re-executes
+# itself with sudo when needed (except for 'status', which only reads).
+#
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  battery-charge-limit status               show current thresholds (no sudo)
+  battery-charge-limit full                 temporarily allow charging to 100%
+  battery-charge-limit -s 60 -e 80 apply    apply custom start/stop percentages
+  battery-charge-limit install              install + enable systemd boot service
+  battery-charge-limit uninstall            disable + remove systemd boot service
+
+All changes require root; the script re-executes itself with sudo.
+EOF
+}
+
+SCRIPT_PATH="$(readlink -f "$0")"
+SUPPLY_DIR="/sys/class/power_supply"
+
+DEFAULT_START=75
+DEFAULT_END=80
+
+UNIT_NAME="battery-charge-limit.service"
+UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+find_batteries() {
+    local b
+    for b in "$SUPPLY_DIR"/BAT*; do
+        [[ -d "$b" ]] || continue
+        [[ "$(cat "$b/type" 2>/dev/null || true)" == "Battery" ]] || continue
+        echo "$b"
+    done
+}
+
+end_file_for() {  # $1 = battery dir
+    [[ -e "$1/charge_control_end_threshold" ]] && echo "$1/charge_control_end_threshold" && return
+    [[ -e "$1/charge_stop_threshold" ]] && echo "$1/charge_stop_threshold" && return
+}
+
+start_file_for() {  # $1 = battery dir
+    [[ -e "$1/charge_control_start_threshold" ]] && echo "$1/charge_control_start_threshold" && return
+    [[ -e "$1/charge_start_threshold" ]] && echo "$1/charge_start_threshold" && return
+}
+
+require_batteries() {
+    local bats
+    bats="$(find_batteries)"
+    [[ -n "$bats" ]] || die "no battery with charge-control thresholds found under $SUPPLY_DIR"
+    echo "$bats"
+}
+
+validate_pct() {  # $1 = name, $2 = value
+    local re='^[0-9]+$'
+    [[ "$2" =~ $re ]] || die "$1 must be an integer (got '$2')"
+    (( 0 <= 10#$2 && 10#$2 <= 100 )) || die "$1 must be between 0 and 100 (got '$2')"
+}
+
+write_thresholds() {  # $1 = start pct, $2 = end pct
+    local bat start_f end_f
+    for bat in $(require_batteries); do
+        start_f="$(start_file_for "$bat")"
+        end_f="$(end_file_for "$bat")"
+        [[ -n "$end_f" ]] || die "no charge-control end threshold for $bat (unsupported hardware?)"
+        if [[ -n "$start_f" ]]; then
+            printf '%s\n' "$1" > "$start_f"
+        fi
+        printf '%s\n' "$2" > "$end_f"
+    done
+}
+
+show_status() {
+    local bat start_f end_f start_val end_val
+    for bat in $(require_batteries); do
+        start_f="$(start_file_for "$bat")"
+        end_f="$(end_file_for "$bat")"
+        start_val="$([[ -n "$start_f" ]] && cat "$start_f" 2>/dev/null || echo 'n/a')"
+        end_val="$(cat "$end_f" 2>/dev/null || echo 'n/a')"
+        echo "Battery: ${bat##*/}"
+        echo "  start threshold (resume charging): ${start_val%/}%"
+        echo "  end threshold (stop charging):     ${end_val%/}%"
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+cmd_install() {
+    [[ -x "$SCRIPT_PATH" ]] || chmod +x "$SCRIPT_PATH"
+    cat > "$UNIT_PATH" <<EOF
+[Unit]
+Description=Limit battery charge (start ${DEFAULT_START}%, stop ${DEFAULT_END}%)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPT_PATH}
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now "$UNIT_NAME" >/dev/null
+    echo "installed + enabled ${UNIT_NAME} (runs ${SCRIPT_PATH} at every boot)"
+}
+
+cmd_uninstall() {
+    systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
+    rm -f "$UNIT_PATH"
+    systemctl daemon-reload
+    echo "removed ${UNIT_NAME}"
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+START="$DEFAULT_START"
+END="$DEFAULT_END"
+ACTION="status"
+
+ORIG_ARGS=("$@")
+
+while (( $# )); do
+    case "$1" in
+        status)            ACTION="status" ;;
+        full)              ACTION="full" ;;
+        install)           ACTION="install" ;;
+        uninstall)         ACTION="uninstall" ;;
+        apply)             ACTION="apply" ;;
+        -s|--start)        shift; START="$1" ;;
+        -e|--end)          shift; END="$1" ;;
+        -h|--help)         usage; exit 0 ;;
+        *)                 die "unknown argument: $1 (see --help)" ;;
+    esac
+    shift
+done
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+case "$ACTION" in
+    status)
+        show_status
+        exit 0
+        ;;
+esac
+
+# Everything else needs root (sysfs files are root-owned).
+if (( EUID != 0 )); then
+    exec sudo "$SCRIPT_PATH" "${ORIG_ARGS[@]}"
+fi
+
+case "$ACTION" in
+    apply)
+        validate_pct "start" "$START"
+        validate_pct "end" "$END"
+        (( END >= START || START == 0 )) || die "start ($START) must be <= end ($END), or 0"
+        write_thresholds "$START" "$END"
+        echo "battery charge limited: resume at ${START}%, stop at ${END}%"
+        show_status
+        ;;
+    full)
+        write_thresholds 0 100
+        echo "temporarily allowing full charge (start 0%, stop 100%)"
+        echo "re-run 'battery-charge-limit' to restore ${DEFAULT_START}/${DEFAULT_END}"
+        ;;
+    install)
+        cmd_install
+        ;;
+    uninstall)
+        cmd_uninstall
+        ;;
+esac

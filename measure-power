@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# measure-power — simple script to report current system power usage
+# Usage: measure-power [watch]
+#   watch   – continuously update the display every 2 seconds (Ctrl-C to stop)
+
+set -euo pipefail
+
+# Helper: format microwatts → watts with one decimal place
+fmt_watts() {
+    # $1 = microwatts (integer)
+    printf "%.1fW" "$(awk "BEGIN{printf \"%f\", $1/1000000}")"
+}
+
+show_snapshot() {
+    echo "=== Power snapshot: $(date '+%Y-%m-%d %H:%M:%S') ==="
+    if shopt -s nullglob && [[ -d /sys/class/power_supply/* ]]; then
+        for dev in /sys/class/power_supply/*; do
+            [[ -d "$dev" ]] || continue
+            name=$(basename "$dev")
+            type=$(cat "$dev/type" 2>/dev/null || echo "unknown")
+            online=$(cat "$dev/online" 2>/dev/null || echo "n/a")
+            status=$(cat "$dev/status" 2>/dev/null || echo "n/a")
+            capacity=$(cat "$dev/capacity" 2>/dev/null || echo "n/a")
+            voltage_uv=$(cat "$dev/voltage_now" 2>/dev/null || echo "")
+            power_uw=$(cat "$dev/power_now" 2>/dev/null || echo "")
+            line="${name} (${type})"
+            [[ "$type" == "Battery" ]] && line+=" – status=$status, capacity=${capacity}%"
+            [[ "$online" != "n/a" ]] && line+=" – online=$online"
+            if [[ -n "$voltage_uv" ]]; then
+                voltage_v=$(awk "BEGIN{printf \"%.2fV\", $voltage_uv/1000000}")
+                line+=" – voltage=$voltage_v"
+            fi
+            if [[ -n "$power_uw" ]]; then
+                line+=" – power=$(fmt_watts $power_uw)"
+            fi
+            echo "$line"
+        done
+    elif command -v upower >/dev/null; then
+        upower -i $(upower -e | grep BAT) 2>/dev/null | grep -E "state|percentage|energy-rate"
+    else
+        echo "No power‑supply information found."
+    fi
+    echo
+}
+
+if [[ "${1:-}" == "watch" ]]; then
+    while :; do
+        clear
+        show_snapshot
+        sleep 2
+done
+else
+    show_snapshot
+fi

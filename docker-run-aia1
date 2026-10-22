@@ -8,10 +8,11 @@
 # If your current directory is within $HOME, but is not $HOME itself,
 # it will be volume-mounted as a read-write mount in the container.
 set -eu
+[ "${DEBUG:-0}" = "1" ] && set -x
 
 # assumes dind container is called 'dnd' and that we're using a docker network
 DIND_HOST="dind"
-DOCKER_NETWORK="dind-lab"
+DOCKER_NETWORK="ai-agent-lab"
 
 _add_volume_mount () {
     local d="$1" a="$2"

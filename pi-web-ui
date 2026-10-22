@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Pin pi-web-ui to the pi-managed SDK copy in ~/.pi/agent/npm/node_modules.
+# The default "follow newer pi SDK" PATH scan picks up the mise pi *binary*
+# install (~/.local/share/mise/installs/pi/...), which has package.json but no
+# dist/ -> "Cannot find module .../dist/index.js".
+export PI_WEB_SDK=bundled
+exec ~/.pi/agent/npm/node_modules/pi-web-ui/bin/pi-web-ui.mjs "$@"

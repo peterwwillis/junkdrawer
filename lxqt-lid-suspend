@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# lxqt-lid-suspend — get/set the LXQt lid-close action for battery and AC.
+#
+# LXQt's lxqt-powermanagement daemon takes over lid handling from systemd-logind
+# (it holds a "handle-lid-switch" block inhibitor), so this setting lives in
+# ~/.config/lxqt/lxqt-powermanagement.conf, not logind.conf.
+#
+# Usage:
+#   lxqt-lid-suspend                          # show current settings
+#   lxqt-lid-suspend status                   # same as above
+#   lxqt-lid-suspend set <target> <action>    # change one lid-close action
+#   lxqt-lid-suspend enable-all               # suspend everywhere, lock-screen on AC
+#   lxqt-lid-suspend disable-all              # ignore lid close everywhere
+#   lxqt-lid-suspend extmon <on|off>          # use extmon actions when external monitor plugged
+#   lxqt-lid-suspend help                     # this help
+
+set -euo pipefail
+
+CONF="$HOME/.config/lxqt/lxqt-powermanagement.conf"
+DAEMON=/usr/bin/lxqt-powermanagement
+
+SCRIPT_PATH="$(readlink -f "$0")"
+UNIT_NAME="lxqt-lid-suspend.service"
+USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+USER_UNIT_PATH="$USER_UNIT_DIR/$UNIT_NAME"
+
+declare -A TO_NUM=(
+    [nothing]=-1 [ignore]=-1
+    [lock-screen]=-2
+    [logout]=0
+    [hibernate]=1
+    [reboot]=2
+    [shutdown]=3
+    [suspend]=4
+    [monitor-off]=5
+    [leave-dialog]=6
+)
+declare -A FROM_NUM=(
+    [-1]=nothing [-2]=lock-screen [0]=logout [1]=hibernate [2]=reboot
+    [3]=shutdown [4]=suspend [5]=monitor-off [6]=leave-dialog
+)
+declare -A KEY_FOR=(
+    [battery]=lidClosedAction
+    [ac]=lidClosedAcAction
+    [extmon-battery]=lidClosedExtMonAction
+    [extmon-ac]=lidClosedExtMonAcAction
+)
+TARGETS="battery ac extmon-battery extmon-ac"
+ACTIONS="${!TO_NUM[*]}"
+
+die() { echo "error: $*" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+lxqt-lid-suspend — control what happens when the laptop lid closes (LXQt)
+
+Usage:
+  lxqt-lid-suspend                        Show current settings and live state
+  lxqt-lid-suspend status                 Same as above
+  lxqt-lid-suspend set <target> <action>  Change one lid-close action
+  lxqt-lid-suspend enable-all             Suspend on lid close everywhere,
+                                          lock-screen for AC targets
+  lxqt-lid-suspend disable-all            Ignore lid close for ALL targets
+  lxqt-lid-suspend extmon <on|off>        Enable/disable external-monitor mode
+  lxqt-lid-suspend install                Install + enable systemd user service
+                                          applying 'enable-all' at each login
+  lxqt-lid-suspend uninstall              Disable + remove that service
+  lxqt-lid-suspend help                   Show this help
+
+Targets:
+  battery          Lid closes while running on battery
+  ac               Lid closes while plugged into AC power
+  extmon-battery   Lid closes on battery WITH an external monitor attached
+  extmon-ac        Lid closes on AC power WITH an external monitor attached
+                   (extmon targets only apply when extmon mode is 'on')
+
+Actions:
+  nothing          Do nothing (ignore the lid)
+  lock-screen      Lock the screen only
+  logout           End the current session
+  hibernate        Hibernate (suspend-to-disk)
+  reboot           Reboot the system
+  shutdown         Power off the system
+  suspend          Suspend (suspend-to-RAM) — the usual laptop behavior
+  monitor-off      Turn off monitor(s) only
+  leave-dialog     Show the LXQt leave/session dialog
+  ignore           Alias for 'nothing'
+
+Examples:
+  lxqt-lid-suspend status
+  lxqt-lid-suspend set battery suspend     # suspend when unplugged, lid closed
+  lxqt-lid-suspend set ac nothing          # keep running when plugged in
+  lxqt-lid-suspend enable-all              # suspend everywhere; lock-screen on AC
+  lxqt-lid-suspend disable-all             # never act on lid close
+
+Config file: $CONF
+The lxqt-powermanagement daemon is stopped before each edit and restarted after,
+because it would otherwise rewrite the config with stale values on exit.
+EOF
+}
+
+get_val() {  # get_val <key>
+    awk -F= -v k="$1" '$0 ~ "^"k"=" {print $2}' "$CONF"
+}
+
+set_val() {  # set_val <key> <value> — daemon must already be stopped
+    local key=$1 val=$2
+    [[ -f $CONF ]] || die "$CONF not found (run lxqt-powermanagement once first)"
+    if grep -q "^${key}=" "$CONF"; then
+        sed -i "s/^${key}=.\+/${key}=${val}/" "$CONF" || die "sed failed for $key"
+        [[ $(get_val "$key") == "$val" ]] || die "failed to update $key"
+    else
+        # key missing: append under the [General] section
+        printf '%s=%s\n' "$key" "$val" >> "$CONF"
+    fi
+}
+
+stop_daemon() {
+    pkill -f '^/usr/bin/lxqt-powermanagement' 2>/dev/null || true
+    sleep 1
+}
+
+start_daemon() {
+    if command -v setsid >/dev/null; then
+        DISPLAY="${DISPLAY:-:0}" setsid nohup "$DAEMON" >/dev/null 2>&1 &
+    else
+        DISPLAY="${DISPLAY:-:0}" nohup "$DAEMON" >/dev/null 2>&1 &
+    fi
+    disown 2>/dev/null || true
+    sleep 2
+    pgrep -f '^/usr/bin/lxqt-powermanagement' >/dev/null || die "daemon did not restart; start it manually: $DAEMON &"
+}
+
+show_status() {
+    echo "LXQt lid-close settings ($CONF):"
+    local k v num name
+    for target in $TARGETS; do
+        k=${KEY_FOR[$target]}
+        v=$(get_val "$k")
+        num=${v:--1}
+        name=${FROM_NUM[$num]:-"$num (unknown)"}
+        printf '  %-16s %-22s -> %s\n' "$target" "$k" "$name"
+    done
+    v=$(get_val enableExtMonLidClosedActions)
+    echo "  External-monitor mode is $([[ ${v:-false} == true ]] && echo ON || echo OFF)."
+    echo
+    echo "Effective behavior right now:"
+    if pgrep -f '^/usr/bin/lxqt-powermanagement' >/dev/null; then
+        local ac
+        ac=$(busctl get-property org.freedesktop.UPower /org/freedesktop/UPower \
+             org.freedesktop.UPower OnBattery 2>/dev/null | grep -q true && echo battery || echo AC)
+        echo "  Daemon running; currently on $ac."
+    else
+        echo "  WARNING: lxqt-powermanagement is NOT running."
+    fi
+}
+
+cmd_set() {
+    local target=$1 action=$2
+    [[ -n ${KEY_FOR[$target]:-} ]] || die "unknown target '$target'
+Valid targets: $TARGETS
+Run '$0 help' for details."
+    [[ -n ${TO_NUM[$action]:-} ]] || die "unknown action '$action'
+Valid actions: $(echo $ACTIONS | tr ' ' '\n' | grep -v '^ignore$' | sort | paste -sd' ')
+Run '$0 help' for details."
+    stop_daemon
+    set_val "${KEY_FOR[$target]}" "${TO_NUM[$action]}"
+    start_daemon
+    echo "Set lid-close action for $target to: $action (${TO_NUM[$action]})"
+}
+
+cmd_all() {
+    local action=$1 cmd=$2 target num label
+    [[ -n ${TO_NUM[$action]:-} ]] || die "usage: $0 ${cmd:-enable-all|disable-all}"
+    stop_daemon
+    for target in $TARGETS; do
+        case $cmd in
+            enable-all)
+                # AC targets lock the screen instead of suspending
+                if [[ $target == ac || $target == extmon-ac ]]; then
+                    num=${TO_NUM[lock-screen]}; label="lock-screen"
+                else
+                    num=${TO_NUM[suspend]};    label="suspend"
+                fi
+                ;;
+            disable-all)
+                num=${TO_NUM[nothing]}; label="nothing"
+                ;;
+            *) die "internal error" ;;
+        esac
+        set_val "${KEY_FOR[$target]}" "$num"
+        echo "Set lid-close action for $target to: $label ($num)"
+    done
+    start_daemon
+}
+
+cmd_extmon() {
+    local val
+    case ${1:-} in
+        on)  val=true ;;
+        off) val=false ;;
+        *)   die "usage: $0 extmon <on|off>" ;;
+    esac
+    stop_daemon
+    set_val enableExtMonLidClosedActions "$val"
+    start_daemon
+    echo "External-monitor lid actions mode: $val"
+}
+
+cmd_install() {
+    # systemd USER unit: runs at login as this user, applies enable-all policy
+    # (suspend on lid close everywhere, lock-screen for AC targets). This guards
+    # against the lxqt-powermanagement daemon clobbering the config on exit.
+    mkdir -p "$(dirname "$USER_UNIT_PATH")"
+    cat > "$USER_UNIT_PATH" <<EOF
+[Unit]
+Description=LXQt lid-close policy: enable-all (suspend everywhere, lock-screen on AC)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPT_PATH} enable-all
+RemainAfterExit=no
+
+[Install]
+WantedBy=default.target
+EOF
+    if ! command -v systemctl >/dev/null; then
+        die "systemctl not found; can't enable user service"
+    fi
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$UNIT_NAME" >/dev/null
+    echo "installed + enabled user service ${UNIT_NAME} (runs '${SCRIPT_PATH} enable-all' at each login)"
+}
+
+cmd_uninstall() {
+    systemctl --user disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
+    rm -f "$USER_UNIT_PATH"
+    systemctl --user daemon-reload
+    echo "removed user service ${UNIT_NAME}"
+}
+
+case ${1:-status} in
+    status|"")    show_status ;;
+    help|-h|--help) usage ;;
+    set)          shift; [[ $# -eq 2 ]] || { usage >&2; die "'set' requires exactly 2 arguments: <target> <action>"; }; cmd_set "$@" ;;
+    enable-all)   cmd_all suspend enable-all ;;
+    disable-all)  cmd_all nothing disable-all ;;
+    extmon|enable-extmon)
+                  shift; [[ $# -eq 1 ]] || { usage >&2; die "'${1:-extmon}' requires exactly 1 argument: <on|off>"; }; cmd_extmon "$@" ;;
+    install)      cmd_install ;;
+    uninstall)    cmd_uninstall ;;
+    *)            usage >&2; die "unknown command '$1'" ;;
+esac
