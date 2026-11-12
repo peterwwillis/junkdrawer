@@ -763,10 +763,14 @@ _query_ready_issues () {
         "${assignee_args[@]}" \
         --sort "$sort" \
         --limit 50)"
+    # Linear CLI >= 3.x returns plain arrays where older versions wrapped
+    # collections in {"nodes": [...]}; normalize both shapes.
     printf '%s' "$query_json" | jq -c --arg priority "$priority" '
-        [.nodes[] | select(
+        (if type == "object" and has("nodes") then .nodes else . end)
+        | [.[] | select(
             ($priority == "" or (.priority | tostring) == $priority)
-            and ([.inverseRelations.nodes[]?
+            and ([(.inverseRelations
+                   | if type == "object" and has("nodes") then .nodes else . end)[]?
                 | select(.type == "blocks"
                     and .issue.state.type != "completed"
                     and .issue.state.type != "canceled")
@@ -860,10 +864,12 @@ _fetch_issue () {
     if [ -n "$repo_label_prefix" ] ; then
         local match_count
         match_count="$(printf '%s' "$issue_json" | jq --arg p "$repo_label_prefix" \
-            '[.labels.nodes[]?.name | select(startswith($p))] | length')"
+            '[(.labels | if type == "object" and has("nodes") then .nodes else . end)[]?.name
+              | select(startswith($p))] | length')"
         if [ "$match_count" -gt 0 ] ; then
             gitrepo_label_name="$(printf '%s' "$issue_json" | jq -r --arg p "$repo_label_prefix" \
-                '[.labels.nodes[]?.name | select(startswith($p))] | sort | first')"
+                '[(.labels | if type == "object" and has("nodes") then .nodes else . end)[]?.name
+                  | select(startswith($p))] | sort | first')"
             gitrepo_label_name="${gitrepo_label_name#"$repo_label_prefix"}"
             if [ "$match_count" -gt 1 ] ; then
                 _info "Note: $identifier has $match_count '${repo_label_prefix}*' labels - using '${repo_label_prefix}${gitrepo_label_name}'."
