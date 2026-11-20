@@ -1,59 +1,38 @@
 #!/usr/bin/env bash
 # ai-task.sh - list Linear issues ready for an AI to work on, and start one
 #
-# See README.md in this directory for full design notes and gotchas. Quick
-# summary: `list` shows ready-to-work Linear issues matching your filters;
-# `start <TICKET-ID>` creates an isolated git worktree for a specific one,
-# optionally pre-authenticates read-only AWS credentials (AWS ReadOnly
-# mode - opt-in via --aws-readonly-role ROLE / AITASK_AWS_ROLE_READONLY, or
-# `aws-preauth` command), and launches an autonomous AI session in tmux -
-# `claude` (default) or `opencode` (--agent-type opencode). Claude now runs
-# headless (`claude -p --permission-mode auto`) by default, so it cannot
-# hang on an unseen AskUserQuestion prompt; use `--interactive` to get the
-# old attachable tmux session. `resume` continues a blocked ticket, and
-# `watch` polls Linear and auto-resumes when a human replies with a
-# comment starting with `ai-task: resume`. The agent runs
-# in a pristine login shell (env -i, HOME/TERM/LANG only) so nothing from
-# your interactive terminal - exported credentials included - leaks in.
-# Credentials are injected via --creds-loader / AITASK_CREDS_LOADER: a
-# script SOURCED ONCE ON THE TRUSTED SIDE at start time (before the
-# worktree is created, where 1Password/op, keychains, SSO helpers are
-# reachable); the vars it exports are injected into the tmux session's
-# environment and re-added by name through the clean-env stage, so the
-# agent gets them without anything being written to disk.
+# See README.md in this directory for full design notes and gotchas. Quick summary: `list` shows ready-to-work Linear issues matching your filters;
+# `start <TICKET-ID>` creates an isolated git worktree for a specific one, optionally pre-authenticates read-only AWS credentials (AWS ReadOnly
+# mode - opt-in via --aws-readonly-role ROLE / AITASK_AWS_ROLE_READONLY, or `aws-preauth` command), and launches an autonomous AI session in tmux -
+# `claude` (default) or `opencode` (--agent-type opencode). Claude now runs headless (`claude -p --permission-mode auto`) by default, so it cannot
+# hang on an unseen AskUserQuestion prompt; use `--interactive` to get the old attachable tmux session. `resume` continues a blocked ticket, and
+# `watch` polls Linear and auto-resumes when a human replies with a comment starting with `ai-task: resume`.
 #
-# Repo selection for `start`: by default the task starts in whatever repo
-# the current directory belongs to. --repo-label-prefix (e.g. "gitrepo_")
-# switches to label-driven selection instead: a Linear label
-# "<PREFIX><NAME>" picks AITASK_REPO_DIRS[<NAME>] (an associative array in
-# the config file mapping label names to local checkouts) as the repo;
-# --repo-missing controls what happens when an issue lacks such a label
-# (prompt / fail / cwd), and --repo NAME forces a specific entry
-# regardless of labels.
+# The agent runs in a pristine login shell (env -i, HOME/TERM/LANG only) so nothing from your interactive terminal - exported credentials included - leaks in.
+# Credentials are injected via --creds-loader / AITASK_CREDS_LOADER: a script SOURCED ONCE ON THE TRUSTED SIDE at start time (before the
+# worktree is created, where 1Password/op, keychains, SSO helpers are reachable); the vars it exports are injected into the tmux session's
+# environment and re-added by name through the clean-env stage, so the agent gets them without anything being written to disk.
 #
-# Each command's requirements are checked just for that command: `list`
-# needs only the linear CLI + jq (and works outside a git repo); `start`
-# additionally needs a git repo (normally the current directory's; see
-# Repo selection above), git, tmux, and the CLI for whichever
-# --agent-type is selected (claude or opencode); `aws-preauth` needs
-# aws-sso, the AWS CLI, and jq, but never touches Linear.
+# Repo selection for `start`: by default the task starts in whatever repo the current directory belongs to. --repo-label-prefix (e.g. "gitrepo_")
+# switches to label-driven selection instead: a Linear label "<PREFIX><NAME>" picks AITASK_REPO_DIRS[<NAME>] (an associative array in
+# the config file mapping label names to local checkouts) as the repo; --repo-missing controls what happens when an issue lacks such a label
+# (prompt / fail / cwd), and --repo NAME forces a specific entry regardless of labels.
+#
+# Each command's requirements are checked just for that command: `list` needs only the linear CLI + jq (and works outside a git repo); `start`
+# additionally needs a git repo (normally the current directory's; see Repo selection above), git, tmux, and the CLI for whichever
+# --agent-type is selected (claude or opencode); `aws-preauth` needs aws-sso, the AWS CLI, and jq, but never touches Linear.
 set -eu
 [ "${DEBUG:-0}" = "1" ] && set -x
 
 SCRIPT="$(basename "$0")"
 REPO_NAME="<repo>"   # placeholder; resolved by cmd_start (best-effort in _usage)
 
-# Shared state: resolved options and start-pipeline artifacts live in
-# script-scope globals (team, label, ..., worktree_dir, session, ...).
-# Functions that set globals say so in their header comment; everything
-# else takes explicit arguments.
+# Shared state: resolved options and start-pipeline artifacts live in script-scope globals (team, label, ..., worktree_dir, session, ...).
+# Functions that set globals say so in their header comment; everything else takes explicit arguments.
 
-# Creds-loader capture state (see _run_creds_loader). Initialized here so
-# _report_plan/_launch_tmux are safe under set -u even when the loader
-# never ran (not configured, or dry run). NOTE: it must stay an ARRAY -
-# `+=` on a scalar silently concatenates without separators - and every
-# user of "${creds_env_args[@]}" guards with a length check, because macOS
-# bash 3.2 errors on "${empty_array[@]}" under set -u.
+# Creds-loader capture state (see _run_creds_loader). Initialized here so _report_plan/_launch_tmux are safe under set -u even when the loader
+# never ran (not configured, or dry run). NOTE: it must stay an ARRAY - `+=` on a scalar silently concatenates without separators - and every
+# user of "${creds_env_args[@]}" guards with a length check, because macOS bash 3.2 errors on "${empty_array[@]}" under set -u.
 creds_env_names=""
 creds_env_args=()
 
@@ -72,10 +51,8 @@ _require_cmd () {
 # Print the usage text (exits 0 on -h/--help; error paths go via
 # _usage_error, which exits 1).
 _usage () {
-    # The usage text embeds $REPO_NAME (default worktree-root line). Resolve
-    # it best-effort for display: use the already-detected repo if we have
-    # one, else peek at the surrounding repo without requiring one (--help
-    # must work anywhere), else keep the "<repo>" placeholder.
+    # The usage text embeds $REPO_NAME (default worktree-root line). Resolve it best-effort for display: use the already-detected repo if we have
+    # one, else peek at the surrounding repo without requiring one (--help must work anywhere), else keep the "<repo>" placeholder.
     local root url
     if [ "$REPO_NAME" = "<repo>" ] \
         && root="$(git rev-parse --show-toplevel 2>/dev/null)" \
@@ -1241,52 +1218,19 @@ $url
 $description
 </description>
 
-You're working autonomously and unattended in an isolated git worktree -
-nobody is watching this session in real time, so don't wait for
-confirmation on ordinary decisions. Plan your approach before making
-changes. If the ticket itself is ambiguous about what's wanted, say so in
-a Linear comment (see below) and use your best judgment rather than
-stalling.
+You're working autonomously and unattended in an isolated git worktree - nobody is watching this session in real time, so don't wait for confirmation on ordinary decisions. Plan your approach before making changes. If the ticket itself is ambiguous about what's wanted, say so in a Linear comment (see below) and use your best judgment rather than stalling.
 
-CRITICAL: this session is headless. You cannot ask the user questions and
-you must not use any AskUserQuestion, question, or interactive-prompt tool.
-If you need a decision or clarification, post a Linear comment that starts
-with the marker \`<!-- ai-task: blocked -->\`, ask your questions
-numbered, and tell the user to reply with a comment starting with
-\`ai-task: resume\` (one reply can answer all of them; \`ai-task resume\`
-picks it up), move the ticket to "$blocked_state"
-(\`linear issue update $identifier --state "$blocked_state"\`), commit any
-progress, and stop. Do not wait for a reply.
+CRITICAL: this session is headless. You cannot ask the user questions and you must not use any AskUserQuestion, question, or interactive-prompt tool. If you need a decision or clarification, post a Linear comment that starts with the marker \`<!-- ai-task: blocked -->\`, ask your questions numbered, and tell the user to reply with a comment starting with \`ai-task: resume\` (one reply can answer all of them; \`ai-task resume\` picks it up), move the ticket to "$blocked_state" (\`linear issue update $identifier --state "$blocked_state"\`), commit any progress, and stop. Do not wait for a reply.
 
-Post a Linear comment (\`linear issue comment add $identifier -b "..."\`)
-at each of these milestones:
+Post a Linear comment (\`linear issue comment add $identifier -b "..."\`) at each of these milestones:
 
 1. When you start: a short comment noting you've begun and your plan.
-2. If you hit something this session genuinely can't do because of its
-   restricted scope or permissions: keep working on everything else you
-   can first, note the gap clearly in the PR description (step 3), then
-   comment starting with \`<!-- ai-task: blocked -->\` explaining exactly
-   what's needed and that the user's reply should start with
-   \`ai-task: resume\`, move the ticket to "$blocked_state"
-   (\`linear issue update $identifier --state "$blocked_state"\`), and stop.
-3. When finished (fully, or as far as this session could get): commit
-   your work and open a PR with \`gh pr create --draft\` referencing this
-   ticket with "ref $identifier" in the PR body (not a closing keyword
-   like "fixes"). ALWAYS pass \`--draft\`: never open a non-draft PR, and
-   never run \`gh pr ready\` - a non-draft PR notifies reviewers
-   immediately, and a human marks it ready once they've looked it over.
-   No test-plan checklist, no "Generated with Claude Code" line. Then
-   post a final Linear comment with the PR link.
+2. If you hit something this session genuinely can't do because of its restricted scope or permissions: keep working on everything else you can first, note the gap clearly in the PR description (step 3), then comment starting with \`<!-- ai-task: blocked -->\` explaining exactly what's needed and that the user's reply should start with \`ai-task: resume\`, move the ticket to "$blocked_state" (\`linear issue update $identifier --state "$blocked_state"\`), and stop.
+3. When finished (fully, or as far as this session could get): commit your work and open a PR with \`gh pr create --draft\` referencing this ticket with "ref $identifier" in the PR body (not a closing keyword like "fixes"). ALWAYS pass \`--draft\`: never open a non-draft PR, and never run \`gh pr ready\` - a non-draft PR notifies reviewers immediately, and a human marks it ready once they've looked it over. No test-plan checklist, no "Generated with Claude Code" line. Then post a final Linear comment with the PR link.
 
-   Note: this session runs with Claude Code's \`auto\` permission mode,
-   which routes tool calls through a safety classifier. The
-   pre-approved allow list (Bash \`gh pr create\`, \`git push origin *\`,
-   \`linear ...\`) is evaluated first, so those run without review. If
-   the classifier blocks a \`gh pr create\` or \`git push\` it judges
-   out of scope anyway, commit your work, post a final Linear comment
-   with the proposed PR title/body/branch, and stop - the user will
-   push and open the PR manually. Don't loop trying to retry the
-   blocked command.
+   Note: this session runs with Claude Code's \`auto\` permission mode, which routes tool calls through a safety classifier. The pre-approved allow list (Bash \`gh pr create\`, \`git push origin *\`, \`linear ...\`) is evaluated first, so those run without review. If the classifier blocks a \`gh pr create\` or \`git push\` it judges out of scope anyway, commit your work, post a final Linear comment with the proposed PR title/body/branch, and stop - the user will push and open the PR manually. Don't loop trying to retry the blocked command.
+
+   Run those commands exactly as the allow list spells them, as standalone Bash calls: \`gh pr create ...\`, \`git push origin ...\`, \`linear issue comment add ...\`, \`linear issue update ...\`. Allow rules and the sandbox's excluded-command list match the literal START of the command string, so NEVER prefix them with \`cd <dir> &&\`, and never wrap them in a pipe, loop, subshell, \`\$(...)\` or env-var prefix. A prefixed command falls through to the safety classifier (which can deny it) or to the sandbox (where gh/linear fail TLS verification). Your working directory is already the worktree, so no \`cd\` is needed; use absolute paths, \`git -C <dir>\` or \`--body-file <path>\` instead. For a multi-line PR body or comment, write it to a file in the scratchpad directory first (Write tool) and pass it to gh with \`--body-file\`; for \`linear\`, pass the text as a literal \`-b "..."\` argument rather than a heredoc or command substitution. One command per Bash call. A \`gh pr create\` that was denied only because of a \`cd\`/pipe prefix is not out of scope: re-run it once as a plain standalone command before giving up.
 
 Never force-push, never run destructive git operations.
 EOP
@@ -1298,22 +1242,9 @@ _append_aws_prompt () {
     prompt="$prompt
 
 AWS ReadOnly mode is on for this repo/session (role: $aws_role_readonly):
-- AWS access is READ-ONLY only - see .aitask-aws/README.md for the
-  available profiles and how to select one (set AWS_PROFILE before
-  running AWS/terraform commands in a given env/aws/<tenant>/ directory).
-  \`terraform apply\`/\`make tfsh-apply\` will fail here by design - this
-  session can plan and investigate, not apply.
-- Your AWS credentials expire after about an hour (an AWS platform limit -
-  not something you can extend or work around). If AWS/terraform calls
-  start failing with an expired/invalid-token error, that's what happened -
-  it's expected for a longer-running session, not a bug to fix. Do NOT try
-  \`aws-sso login\` or any other re-auth yourself - it's intentionally
-  unavailable in this sandbox and won't work. Instead: keep making progress
-  on anything that doesn't need AWS, and post a Linear comment asking the
-  user to run \`ai-task.sh aws-preauth <this worktree>/.aitask-aws $aws_role_readonly\`
-  to refresh your credentials, then continue once they confirm.
-- Follow this repo's CLAUDE.md and .claude/rules/, especially the
-  terraformsh/make wrapper workflow - never run terraform directly."
+- AWS access is READ-ONLY only - see .aitask-aws/README.md for the available profiles and how to select one (set AWS_PROFILE before running AWS/terraform commands in a given env/aws/<tenant>/ directory). \`terraform apply\`/\`make tfsh-apply\` will fail here by design - this session can plan and investigate, not apply.
+- Your AWS credentials expire after about an hour (an AWS platform limit -not something you can extend or work around). If AWS/terraform calls start failing with an expired/invalid-token error, that's what happened - it's expected for a longer-running session, not a bug to fix. Do NOT try \`aws-sso login\` or any other re-auth yourself - it's intentionally unavailable in this sandbox and won't work. Instead: keep making progress on anything that doesn't need AWS, and post a Linear comment asking the user to run \`ai-task.sh aws-preauth <this worktree>/.aitask-aws $aws_role_readonly\` to refresh your credentials, then continue once they confirm.
+- Follow this repo's CLAUDE.md and .claude/rules/, especially the terraformsh/make wrapper workflow - never run terraform directly."
 }
 
 _append_extra_prompt () {
@@ -1335,29 +1266,19 @@ _write_launcher () {
     launcher_file="$worktree_dir/.aitask-launch.sh"
     {
         printf '#!/usr/bin/env bash\n'
-        # The pane itself can't be started with a clean env portably (tmux
-        # mangles multi-word new-session commands differently across
-        # versions), so the launcher re-execs itself under `env -i bash -l`
-        # instead: agent ends up in a pristine login shell regardless of
-        # whatever the launching terminal had exported. Only HOME (needed),
-        # TERM (needed by agent CLIs; tmux default if unset), USER/LOGNAME
-        # (claude's keychain-backed login reports "Not logged in" without
-        # them - empirically bisected: the keychain item itself stays
-        # readable, the agent's auth path just requires these two), and
-        # locale vars pass through; PATH is rebuilt by /etc/profile +
+        # The pane itself can't be started with a clean env portably (tmux mangles multi-word new-session commands differently across
+        # versions), so the launcher re-execs itself under `env -i bash -l` instead: agent ends up in a pristine login shell regardless of
+        # whatever the launching terminal had exported. Only HOME (needed), TERM (needed by agent CLIs; tmux default if unset), USER/LOGNAME
+        # (claude's keychain-backed login reports "Not logged in" without them - empirically bisected: the keychain item itself stays
+        # readable, the agent's auth path just requires these two), and locale vars pass through; PATH is rebuilt by /etc/profile +
         # ~/.bash_profile.
-        # NOTE: if your login profiles export credentials, they come back by
-        # design - this isolates from the session's shell, not from your
+        # NOTE: if your login profiles export credentials, they come back by design - this isolates from the session's shell, not from your
         # machine's startup files.
         #
-        # The script is handed to the second stage via -c + AITASK_LAUNCHER,
-        # NOT as a positional argument (`bash -l "$0"`): inside a script,
-        # "$@" is the script's (empty) argument list, and login profiles
-        # that re-exec /bin/bash into another bash via `bash -i -l "$@"`
-        # (e.g. to upgrade to homebrew bash - Termic and VS Code's shell-env
-        # resolver rely on that trick) would drop the script path entirely,
-        # leaving the pane as a bare interactive shell that never launches
-        # the agent. With -c the command survives in $BASH_EXECUTION_STRING,
+        # The script is handed to the second stage via -c + AITASK_LAUNCHER, NOT as a positional argument (`bash -l "$0"`): inside a script,
+        # "$@" is the script's (empty) argument list, and login profiles that re-exec /bin/bash into another bash via `bash -i -l "$@"`
+        # (e.g. to upgrade to homebrew bash - Termic and VS Code's shell-env resolver rely on that trick) would drop the script path entirely,
+        # leaving the pane as a bare interactive shell that never launches the agent. With -c the command survives in $BASH_EXECUTION_STRING,
         # which such profiles do preserve.
         cat <<EOLAUNCHER
 if [ "\${AITASK_CLEAN_ENV:-}" != "1" ] ; then
@@ -1366,12 +1287,9 @@ if [ "\${AITASK_CLEAN_ENV:-}" != "1" ] ; then
     [ -z "\${LANG:-}" ] || clean_env+=("LANG=\$LANG")
     [ -z "\${LC_ALL:-}" ] || clean_env+=("LC_ALL=\$LC_ALL")
 EOLAUNCHER
-        # Credentials loaded on the trusted side (see _run_creds_loader) ride
-        # through the env -i stage by NAME: each var is re-added explicitly
-        # from the tmux-inherited environment, so the pristine shell keeps
-        # them without anything being written to disk. Values are already in
-        # this shell's environment (tmux -e put them there); they are never
-        # re-printed by the launcher.
+        # Credentials loaded on the trusted side (see _run_creds_loader) ride through the env -i stage by NAME: each var is re-added explicitly
+        # from the tmux-inherited environment, so the pristine shell keeps them without anything being written to disk. Values are already in
+        # this shell's environment (tmux -e put them there); they are never re-printed by the launcher.
         local vname
         # shellcheck disable=SC2016  # the emitted line must expand $VAR at launcher runtime, not now
         for vname in $creds_env_names ; do
@@ -1382,10 +1300,8 @@ EOLAUNCHER
 fi
 EOLAUNCHER
         printf 'cd %q\n' "$worktree_dir"
-        # Creds loader now runs on the trusted side at start time (see
-        # _run_creds_loader); the sandboxed shell receives the exported vars
-        # via tmux's environment instead of sourcing anything here. AWS
-        # ReadOnly mode's env exports are applied after, so they take
+        # Creds loader now runs on the trusted side at start time (see _run_creds_loader); the sandboxed shell receives the exported vars
+        # via tmux's environment instead of sourcing anything here. AWS ReadOnly mode's env exports are applied after, so they take
         # precedence.
         if [ -n "$aws_role_readonly" ] ; then
             printf 'unset AWS_PROFILE\n'
@@ -1394,8 +1310,7 @@ EOLAUNCHER
         fi
         if [ "$agent_type" = "claude" ] ; then
             if [ "$interactive" = "true" ] ; then
-                # Legacy interactive mode: keep the original tmux attach experience.
-                # This still exposes AskUserQuestion, so it is only suitable when
+                # Legacy interactive mode: keep the original tmux attach experience. This still exposes AskUserQuestion, so it is only suitable when
                 # someone will actually watch the session.
                 printf 'exec claude'
                 printf ' --permission-mode %q' "$permission_mode"
@@ -1404,28 +1319,20 @@ EOLAUNCHER
                 # shellcheck disable=SC2016  # "$(cat ...)" must expand when the agent runs, not now
                 printf ' "$(cat %q)"\n' "$prompt_file_out"
             else
-                # Headless mode: run claude -p to completion, capture the
-                # result and session id, then keep the tmux pane alive on
+                # Headless mode: run claude -p to completion, capture the result and session id, then keep the tmux pane alive on
                 # the log so `tmux attach` still shows what happened.
                 #
-                # Prompt channel (empirically verified 2026-10, claude
-                # 2.1.299): with --system-prompt-snapshot on (the default),
-                # the system prompt is recorded on a session's first request
-                # and replayed verbatim on every later request AND resume -
-                # new --append-system-prompt text passed on a resumed run is
-                # silently discarded. User messages are always delivered.
+                # Prompt channel (empirically verified 2026-10, claude 2.1.299): with --system-prompt-snapshot on (the default),
+                # the system prompt is recorded on a session's first request and replayed verbatim on every later request AND resume -
+                # new --append-system-prompt text passed on a resumed run is silently discarded. User messages are always delivered.
                 # So:
-                #   fresh start -> instructions ride via
-                #   --append-system-prompt-file (delivered, and becomes the
-                #   recorded system prompt);
-                #   resume -> the human's Linear replies ride as the user
+                #   fresh start -> instructions ride via   --append-system-prompt-file (delivered, and becomes the
+                #   recorded system prompt); resume -> the human's Linear replies ride as the user
                 #   message.
                 # Don't collapse these into one channel without re-testing.
                 #
-                # Permission mode: by default `auto` (Claude Code's
-                # background safety classifier - auto-approves safe actions,
-                # blocks risky/external ones). `--unsafe-bypass` opts into
-                # `bypassPermissions` (no checks) - its warning is emitted
+                # Permission mode: by default `auto` (Claude Code's background safety classifier - auto-approves safe actions,
+                # blocks risky/external ones). `--unsafe-bypass` opts into `bypassPermissions` (no checks) - its warning is emitted
                 # on the trusted side in _launch_tmux.
                 local perm_mode
                 if [ "$unsafe_bypass" = "true" ] ; then
@@ -1433,38 +1340,26 @@ EOLAUNCHER
                 else
                     perm_mode="auto"
                 fi
-                # The claude invocation is built as a bash ARRAY (invoked
-                # later with "${claude_args[@]}") so tokens never depend on
-                # IFS splitting at the call site; a string-embedded
-                # --append-system-prompt-file path previously reached claude
+                # The claude invocation is built as a bash ARRAY (invoked later with "${claude_args[@]}") so tokens never depend on
+                # IFS splitting at the call site; a string-embedded --append-system-prompt-file path previously reached claude
                 # wrapped in literal double quotes.
                 printf 'claude_args=(-p --permission-mode %q --output-format json)\n' "$perm_mode"
                 [ -z "$model" ] || printf 'claude_args+=(--model %q)\n' "$model"
                 [ -z "$agent_settings" ] || printf 'claude_args+=(--settings %q)\n' "$agent_settings"
-                # Session id: pre-assigned here (global planned_session_id,
-                # read by _do_termic_new_task) and baked into the launcher
-                # as --session-id for a fresh run. Knowing the id up front
-                # means Termic registration needs no discovery step, just a
-                # wait for the first message to reach disk. Verified
-                # 2026-10 (claude 2.1.302): `-p --session-id <uuid>` names
-                # the transcript <uuid>.jsonl; claude refuses --session-id
-                # for an id that already exists ("already in use"), which
-                # the launcher guards below. If no UUID generator exists the
-                # launcher just omits --session-id and registration falls
+                # Session id: pre-assigned here (global planned_session_id, read by _do_termic_new_task) and baked into the launcher
+                # as --session-id for a fresh run. Knowing the id up front means Termic registration needs no discovery step, just a
+                # wait for the first message to reach disk. Verified 2026-10 (claude 2.1.302): `-p --session-id <uuid>` names
+                # the transcript <uuid>.jsonl; claude refuses --session-id for an id that already exists ("already in use"), which
+                # the launcher guards below. If no UUID generator exists the launcher just omits --session-id and registration falls
                 # back to discovering the id from `claude agents`.
                 planned_session_id="$(_new_uuid || true)"
                 [ -n "$planned_session_id" ] || _warn "No UUID generator (uuidgen, python3) found - the headless session id can't be pre-assigned."
                 printf 'planned_sid=%q\n' "$planned_session_id"
-                # CLAUDE_CODE_ENTRYPOINT: a headless run records
-                # "entrypoint":"sdk-cli" in its transcript and claude's
-                # /resume picker hides every sdk-cli/sdk-ts/sdk-py session.
-                # `cli` is rewritten back to sdk-cli in print mode, but any
-                # other value is kept as-is and the session is listed
-                # (verified 2026-10, claude 2.1.302, with the real picker).
-                # The launcher runs under `env -i`, so it is set inline on
-                # the command, not exported from the caller. If a future
-                # claude ignores this, only the /resume listing is lost:
-                # Termic resumes by session id and `claude --resume <id>`
+                # CLAUDE_CODE_ENTRYPOINT: a headless run records "entrypoint":"sdk-cli" in its transcript and claude's
+                # /resume picker hides every sdk-cli/sdk-ts/sdk-py session. `cli` is rewritten back to sdk-cli in print mode, but any
+                # other value is kept as-is and the session is listed (verified 2026-10, claude 2.1.302, with the real picker).
+                # The launcher runs under `env -i`, so it is set inline on the command, not exported from the caller. If a future
+                # claude ignores this, only the /resume listing is lost: Termic resumes by session id and `claude --resume <id>`
                 # still works.
                 cat <<EOHEADLESS
 prompt_file=".aitask-prompt.txt"
@@ -1528,12 +1423,9 @@ fi
 EOHEADLESS
             fi
         else
-            # --auto bypasses any opencode permission prompt not explicitly
-            # denied - opencode's own docs call this "dangerous". There's no
-            # smart auto-approve-but-pause-on-risky-stuff mode to fall back to
-            # like claude's default, and an unattended detached tmux session
-            # would otherwise hang forever on the first interactive prompt. See
-            # README.md "Safety".
+            # --auto bypasses any opencode permission prompt not explicitly denied - opencode's own docs call this "dangerous". There's no
+            # smart auto-approve-but-pause-on-risky-stuff mode to fall back to like claude's default, and an unattended detached tmux session
+            # would otherwise hang forever on the first interactive prompt. See README.md "Safety".
             printf 'export OPENCODE_SANDBOX_CONFIG=%q\n' "$opencode_sandbox_config"
             printf 'export OPENCODE_CONFIG=%q\n' "$opencode_config_file"
             printf 'exec opencode run --auto'
@@ -1552,10 +1444,8 @@ _mark_in_progress () {
 
 _launch_tmux () {
     _info "Starting tmux session '$session'..."
-    # Trusted-side creds loader vars (see _run_creds_loader) are injected
-    # into the tmux SERVER's global environment via -e: the pane process
-    # (the launcher, and through it the agent) inherits them without any
-    # secrets touching disk. Values sit in tmux process memory only.
+    # Trusted-side creds loader vars (see _run_creds_loader) are injected into the tmux SERVER's global environment via -e: the pane process
+    # (the launcher, and through it the agent) inherits them without any secrets touching disk. Values sit in tmux process memory only.
     local -a e_args=() kv
     local aitask_bin
     aitask_bin="$0"
@@ -1569,10 +1459,8 @@ _launch_tmux () {
             fi
             ;;
     esac
-    # Boolean env vars must be the literal strings "true"/"false": the
-    # spawned watch/resume launches re-run _validate_options, which rejects
-    # any other encoding (a "1"/"0" encoding here previously made every
-    # watcher spawned by the headless launcher _die on startup).
+    # Boolean env vars must be the literal strings "true"/"false": the spawned watch/resume launches re-run _validate_options, which rejects
+    # any other encoding (a "1"/"0" encoding here previously made every watcher spawned by the headless launcher _die on startup).
     e_args+=(-e "AITASK_WATCH=$watch")
     e_args+=(-e "AITASK_UNSAFE_BYPASS=$unsafe_bypass")
     e_args+=(-e "AITASK_WATCH_INTERVAL=$watch_interval")
@@ -1593,13 +1481,10 @@ _launch_tmux () {
     tmux new-session -d -s "$session" "${e_args[@]}" -c "$worktree_dir" "$launcher_file"
 }
 
-# Opt-in: register the just-created worktree + AI session as a Termic task.
-# Best-effort - any failure (termic not installed, session not yet
-# registered, etc.) is a warning, not an error. The tmux session above is
-# already usable regardless of whether this succeeds.
+# Opt-in: register the just-created worktree + AI session as a Termic task. Best-effort - any failure (termic not installed, session not yet
+# registered, etc.) is a warning, not an error. The tmux session above is already usable regardless of whether this succeeds.
 #
-# Headless claude: blocks (up to 30s, normally ~2s) until the session's first
-# user message is on disk, because Termic's one-shot `--resume` fails before
+# Headless claude: blocks (up to 30s, normally ~2s) until the session's first user message is on disk, because Termic's one-shot `--resume` fails before
 # that (see _do_termic_new_task).
 _register_termic () {
     [ -n "$termic_action" ] || return 0
@@ -1620,12 +1505,9 @@ _finish () {
 }
 
 cmd_start () {
-    # Repo-independent steps run first: the ticket - and with
-    # --repo-label-prefix set, its labels - determine which repo we work
-    # in, so Linear is consulted before any repo resolution. Repo-dependent
-    # state (MAIN_BRANCH, worktree_root default) is resolved after
-    # _resolve_start_repo, so `start` never pays for git/network work
-    # before it knows where it's operating (see _resolve_start_repo for
+    # Repo-independent steps run first: the ticket - and with --repo-label-prefix set, its labels - determine which repo we work
+    # in, so Linear is consulted before any repo resolution. Repo-dependent state (MAIN_BRANCH, worktree_root default) is resolved after
+    # _resolve_start_repo, so `start` never pays for git/network work before it knows where it's operating (see _resolve_start_repo for
     # the selection order).
     _pick_first_ticket
     _validate_start_inputs
@@ -1636,17 +1518,14 @@ cmd_start () {
     _absolutize_worktree_root
 
     _compute_paths
-    # Auto-default: ~/.config/ai-task/creds.sh is used when it exists and
-    # nothing more explicit (CLI flag / AITASK_CREDS_LOADER / config) was
+    # Auto-default: ~/.config/ai-task/creds.sh is used when it exists and nothing more explicit (CLI flag / AITASK_CREDS_LOADER / config) was
     # given. An explicitly empty value stays "off".
     if [ -z "$creds_loader" ] && [ -f "$HOME/.config/ai-task/creds.sh" ] ; then
         creds_loader="$HOME/.config/ai-task/creds.sh"
         _info "Using default creds loader: $creds_loader"
     fi
-    # Trusted-side loader execution must happen BEFORE the worktree exists
-    # (and before Linear state is touched): if the loader fails - e.g.
-    # 1Password is locked - we abort cleanly with nothing created. Skipped
-    # on dry runs, which must never execute user scripts (nor trigger a
+    # Trusted-side loader execution must happen BEFORE the worktree exists (and before Linear state is touched): if the loader fails - e.g.
+    # 1Password is locked - we abort cleanly with nothing created. Skipped on dry runs, which must never execute user scripts (nor trigger a
     # 1Password auth prompt).
     [ "$dry_run" = "1" ] || [ -z "$creds_loader" ] || _run_creds_loader "$creds_loader"
     _report_plan
@@ -1675,10 +1554,8 @@ cmd_start () {
     _append_extra_prompt
     _write_prompt_file
     _write_launcher
-    # Mark in-progress only after everything that can fail pre-launch has
-    # succeeded, and immediately before tmux comes up - the narrowest
-    # window in which a ticket can be left "In Progress" with no session
-    # behind it.
+    # Mark in-progress only after everything that can fail pre-launch has succeeded, and immediately before tmux comes up - the narrowest
+    # window in which a ticket can be left "In Progress" with no session behind it.
     _mark_in_progress
     _launch_tmux
     _register_termic
@@ -1689,8 +1566,7 @@ cmd_start () {
 
 # _find_worktree_dir_for_ticket TICKET
 #
-# Resolves worktree_dir for `resume`/`watch`. First, if the current directory
-# looks like an ai-task worktree, uses it. Otherwise resolves the repo and
+# Resolves worktree_dir for `resume`/`watch`. First, if the current directory looks like an ai-task worktree, uses it. Otherwise resolves the repo and
 # worktree_root the same way `start` does.
 _find_worktree_dir_for_ticket () {
     local ticket="$1"
@@ -1714,16 +1590,12 @@ _find_worktree_dir_for_ticket () {
 
 # _build_resume_prompt TICKET
 #
-# Sets global resume_prompt by reading the issue, finding the latest
-# <!-- ai-task: blocked --> comment, and collecting the newer comments the
+# Sets global resume_prompt by reading the issue, finding the latest <!-- ai-task: blocked --> comment, and collecting the newer comments the
 # human sent by replying with a comment starting with `ai-task: resume`.
 #
-# Why a trigger phrase instead of "any newer comment": all agent runs share
-# the owner's Linear account, so agent milestone comments and human replies
-# are indistinguishable by author; without a trigger the agent's own
-# progress comments would be read as replies and feed an auto-resume loop.
-# The agent's blocked instructions tell the user to reply starting with
-# the marker.
+# Why a trigger phrase instead of "any newer comment": all agent runs share the owner's Linear account, so agent milestone comments and human replies
+# are indistinguishable by author; without a trigger the agent's own progress comments would be read as replies and feed an auto-resume loop.
+# The agent's blocked instructions tell the user to reply starting with the marker.
 _build_resume_prompt () {
     local ticket="$1" issue_json comments_json blocked_marker resume_marker
     local blocked_id blocked_time replies_json reply_count reply_bodies
@@ -1780,10 +1652,8 @@ cmd_resume () {
     _build_resume_prompt "$ticket_id"
     _find_worktree_dir_for_ticket "$ticket_id"
     printf '%s' "$resume_prompt" > "$worktree_dir/.aitask-resume-prompt.txt"
-    # Re-run start in headless reuse mode. It will pick up the resume prompt
-    # and the saved session id in the launcher. Keep the user's --watch
-    # preference so a resumed run can spawn its own watcher if it gets stuck
-    # again.
+    # Re-run start in headless reuse mode. It will pick up the resume prompt and the saved session id in the launcher. Keep the user's --watch
+    # preference so a resumed run can spawn its own watcher if it gets stuck again.
     reuse_worktree="true"
     interactive="false"
     cmd_start
@@ -1791,8 +1661,7 @@ cmd_resume () {
 
 # ── watch command ────────────────────────────────────────────────────────────
 
-# Polls Linear for a human reply containing the `ai-task: resume` trigger
-# (see the comment above _build_resume_prompt for why a trigger phrase is
+# Polls Linear for a human reply containing the `ai-task: resume` trigger (see the comment above _build_resume_prompt for why a trigger phrase is
 # required) and hands over to `resume` in place.
 cmd_watch () {
     [ -n "$ticket_id" ] || _die "Usage: $SCRIPT watch <TICKET-ID> [OPTIONS]"
